@@ -414,7 +414,8 @@ class ScoutSuiteParser:
                 'root_account': 'configuration',
                 'MaxPasswordAge': 'configuration',
                 'MinimumPasswordLength': 'configuration',
-                'PasswordReusePrevention': 'configuration'
+                'PasswordReusePrevention': 'configuration',
+                'NoDefaultEBSEncryption': 'configuration'
             }
             
             # Find the resource container in the path - prioritize the last container
@@ -425,7 +426,7 @@ class ScoutSuiteParser:
             
             # Fallback to service name if no container found
             if not resource_type:
-                # For IAM, try to infer from path or finding
+                # Try to infer resource type from path or finding
                 if service == 'iam':
                     if any(term in item_path.lower() for term in ['password', 'mfa', 'root']) or any(term in item_path for term in ['MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention']):
                         resource_type = 'configuration'
@@ -437,6 +438,11 @@ class ScoutSuiteParser:
                         resource_type = 'policy'
                     else:
                         resource_type = 'iam_resource'
+                elif service == 'ec2':
+                    if any(term in item_path for term in ['NoDefaultEBSEncryption']):
+                        resource_type = 'configuration'
+                    else:
+                        resource_type = service
                 else:
                     resource_type = service
             
@@ -481,7 +487,7 @@ class ScoutSuiteParser:
             # Check if this is a configuration finding or needs special handling
             is_config_finding = (resource_id and resource_id.lower() in config_terms) or (service == 'iam' and resource_id in ['MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention'])
             
-            if is_config_finding or (service == 'iam' and any(term in item_path.lower() for term in ['password', 'mfa', 'root'])):
+            if is_config_finding or (service == 'iam' and any(term in item_path.lower() for term in ['password', 'mfa', 'root'])) or (service == 'ec2' and resource_id in ['NoDefaultEBSEncryption']):
                 if service == 'iam':
                     # IAM configuration findings - use the specific setting name
                     if 'MaxPasswordAge' in item_path:
@@ -503,6 +509,16 @@ class ScoutSuiteParser:
                         resource_id = f"iam_{finding_id}"
                         resource_name = finding_id.replace('_', ' ').title()
                     resource_type = 'configuration'
+                elif service == 'ec2':
+                    # EC2 configuration findings
+                    if 'NoDefaultEBSEncryption' in item_path:
+                        resource_id = f"ebs_encryption_{region or 'global'}"
+                        resource_name = f"EBS Default Encryption ({region or 'Global'})"
+                        resource_type = 'configuration'
+                    else:
+                        resource_id = f"{service}_{finding_id}"
+                        resource_name = finding_id.replace('_', ' ').title()
+                        resource_type = 'configuration'
                 else:
                     resource_id = f"{service}_{finding_id}"
                     resource_name = finding_id.replace('_', ' ').title()
