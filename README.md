@@ -7,8 +7,6 @@ A comprehensive parser for NCC Group's open-source ScoutSuite security auditing 
 ```bash
 # 1. Setup (first time only)
 python3 scout_runner.py --setup
-pip3 install sqlalchemy pymysql python-dotenv boto3
-mysql -u root -p < setup_database.sql
 cp .env.example .env  # Edit with your DB credentials
 
 # 2. Scan all AWS accounts
@@ -286,15 +284,11 @@ cd ScoutSuiteParser
 # Setup ScoutSuite environment (installs system deps and ScoutSuite)
 python3 scout_runner.py --setup
 
-# Install parser dependencies
-pip3 install sqlalchemy pymysql python-dotenv boto3
-
-# Create database
-mysql -u root -p < setup_database.sql
-
 # Configure environment
 cp .env.example .env
 # Edit .env with your database credentials
+
+# Database tables are created automatically on first run
 ```
 
 ### Manual Installation
@@ -326,8 +320,12 @@ pip install -e .
 
 #### Database Setup
 ```bash
-# Create database and user
-mysql -u root -p < setup_database.sql
+# Create database and user manually (optional)
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS scoutsuite_db;"
+mysql -u root -p -e "CREATE USER IF NOT EXISTS 'scoutsuite_user'@'localhost' IDENTIFIED BY 'your_password';"
+mysql -u root -p -e "GRANT ALL PRIVILEGES ON scoutsuite_db.* TO 'scoutsuite_user'@'localhost'; FLUSH PRIVILEGES;"
+
+# The parser will create tables automatically on first run
 ```
 
 ## Configuration
