@@ -134,7 +134,7 @@ class ScoutRunner:
             self.logger.info("Cloning ScoutSuite...")
             subprocess.run([
                 'git', 'clone', 
-                'https://github.com/nccgroup/ScoutSuite.git',
+                'https://github.com/disappointingsupernova/ScoutSuite.git',
                 str(self.scoutsuite_dir)
             ], check=True)
         else:
