@@ -6,20 +6,23 @@ A comprehensive parser for NCC Group's open-source ScoutSuite security auditing 
 
 ```mermaid
 graph TB
-    A[ScoutSuite JS Results] --> B[ScoutSuite Parser]
-    B --> C{Database Config?}
-    C -->|Yes| D[SQLAlchemy ORM]
-    C -->|No| E[JSON Console Output]
-    D --> F[(MySQL/MariaDB)]
-    F --> G[Event Deduplication via SHA256]
-    G --> H{New Events?}
-    H -->|Yes| I[Email Notifications]
-    H -->|No| J[Update last_seen Timestamps]
-    I --> K[SMTP/SES Delivery]
-    K --> L[Mark Events as Notified]
-    J --> M[Mark Resolved Events]
-    L --> M
-    M --> N[Commit Transaction]
+    A[AWS Profiles] --> B[Scout Runner]
+    B --> C[ScoutSuite Scan]
+    C --> D[JS Results Files]
+    D --> E[ScoutSuite Parser]
+    E --> F{Database Config?}
+    F -->|Yes| G[SQLAlchemy ORM]
+    F -->|No| H[JSON Console Output]
+    G --> I[(MySQL/MariaDB)]
+    I --> J[Event Deduplication via SHA256]
+    J --> K{New Events?}
+    K -->|Yes| L[Email Notifications]
+    K -->|No| M[Update last_seen Timestamps]
+    L --> N[SMTP/SES Delivery]
+    N --> O[Mark Events as Notified]
+    M --> P[Mark Resolved Events]
+    O --> P
+    P --> Q[Commit Transaction]
 ```
 
 ## Core Features
@@ -149,58 +152,102 @@ Junction table linking events to findings across scans:
 
 ```mermaid
 sequenceDiagram
-    participant JS as ScoutSuite JS File
+    participant R as Scout Runner
+    participant S as ScoutSuite
     participant P as Parser
     participant DB as Database
     participant E as Email Service
     
-    JS->>P: JavaScript Results File
-    P->>P: Extract JSON from JS Variable
-    P->>P: Parse Services and Findings
-    P->>P: Extract Individual Resource Events
-    P->>DB: Check for Existing Scan
-    
-    alt New Scan
-        P->>DB: Insert Scan Record
-        P->>DB: Insert Findings
+    R->>R: Read AWS Profiles
+    loop For Each Profile
+        R->>S: Execute Scout Scan
+        S->>R: Generate JS Results
+        R->>P: Process Results File
+        P->>P: Extract JSON from JS Variable
+        P->>P: Parse Services and Findings
+        P->>P: Extract Individual Resource Events
+        P->>DB: Check for Existing Scan
         
-        loop For Each Event
-            P->>DB: Check Event Hash
-            alt Existing Event
-                P->>DB: Update last_seen
-            else New Event
-                P->>DB: Insert New Event
-                P->>P: Add to Notification Queue
+        alt New Scan
+            P->>DB: Insert Scan Record
+            P->>DB: Insert Findings
+            
+            loop For Each Event
+                P->>DB: Check Event Hash
+                alt Existing Event
+                    P->>DB: Update last_seen
+                else New Event
+                    P->>DB: Insert New Event
+                    P->>P: Add to Notification Queue
+                end
+                P->>DB: Link Event to Finding
             end
-            P->>DB: Link Event to Finding
+            
+            P->>DB: Mark Missing Events as Resolved
+            P->>DB: Commit Transaction
+            
+            alt New Events Found
+                P->>E: Send Notifications
+                E->>P: Delivery Confirmation
+                P->>DB: Mark Events as Notified
+            end
+        else Duplicate Scan
+            P->>P: Skip Processing
         end
-        
-        P->>DB: Mark Missing Events as Resolved
-        P->>DB: Commit Transaction
-        
-        alt New Events Found
-            P->>E: Send Notifications
-            E->>P: Delivery Confirmation
-            P->>DB: Mark Events as Notified
-        end
-    else Duplicate Scan
-        P->>P: Skip Processing
+        R->>R: Cleanup Temp Files
     end
 ```
 
 ## Installation
 
-### System Dependencies
+### Quick Setup with Scout Runner
+```bash
+# Clone the repository
+git clone <repository-url>
+cd ScoutSuiteParser
+
+# Setup ScoutSuite environment (installs system deps and ScoutSuite)
+python3 scout_runner.py --setup
+
+# Install parser dependencies
+pip3 install sqlalchemy pymysql python-dotenv boto3
+
+# Create database
+mysql -u root -p < setup_database.sql
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your database credentials
+```
+
+### Manual Installation
+
+#### System Dependencies
 ```bash
 # Ubuntu/Debian
 sudo apt update
-sudo apt install python3-pip python3-dev default-libmysqlclient-dev build-essential
+sudo apt install python3-pip python3-dev python3-venv default-libmysqlclient-dev build-essential git
+
+# RHEL/CentOS
+sudo yum install python3-pip python3-devel python3-venv git
 
 # Install Python packages
 pip3 install sqlalchemy pymysql python-dotenv boto3
 ```
 
-### Database Setup
+#### ScoutSuite Setup
+```bash
+# Clone ScoutSuite
+git clone https://github.com/nccgroup/ScoutSuite.git
+cd ScoutSuite
+
+# Create virtual environment
+python3 -m venv ../scoutsuite_venv
+source ../scoutsuite_venv/bin/activate
+pip install -e .
+```
+
+#### Database Setup
 ```bash
 # Create database and user
 mysql -u root -p < setup_database.sql
@@ -255,7 +302,22 @@ INITIAL_SCAN=false
 
 ## Usage
 
-### Basic Operation
+### Automated Scanning with Scout Runner
+```bash
+# Setup ScoutSuite environment (first time only)
+python3 scout_runner.py --setup
+
+# Scan all AWS profiles in ~/.aws/config
+python3 scout_runner.py
+
+# Scan specific AWS profile
+python3 scout_runner.py --account my-profile
+
+# Debug mode
+python3 scout_runner.py --debug
+```
+
+### Manual Parser Operation
 ```bash
 # Console output (no database)
 python3 scoutsuite_parser.py results.js
@@ -277,6 +339,16 @@ python3 scoutsuite_parser.py results.js \
   --db-name scoutsuite_db \
   --debug
 ```
+
+### Scout Runner Features
+The `scout_runner.py` script provides automated scanning capabilities:
+
+- **Automatic Setup**: Downloads and configures ScoutSuite in a virtual environment
+- **Multi-Account Support**: Scans all profiles from `~/.aws/config`
+- **Single Account Mode**: Target specific AWS accounts with `--account`
+- **System Dependencies**: Automatically installs required packages (Ubuntu/RHEL)
+- **Temporary Storage**: Uses temporary directories for scan results
+- **Integrated Processing**: Automatically processes results through the parser
 
 ### Logging Levels
 - **INFO**: Standard operational messages (scan progress, database operations)
