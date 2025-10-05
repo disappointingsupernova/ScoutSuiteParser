@@ -591,8 +591,9 @@ class ScoutSuiteParser:
             self.logger.info("Use --debug flag to see detailed JSON output")
         
     def _send_notifications(self, new_events, scan_id):
-        """Send email notifications for new events"""
+        """Send email notifications for new events with graceful error handling"""
         if not self.email_config or not self.email_config.get('recipients'):
+            self.logger.debug("Email notifications disabled or no recipients configured")
             return
             
         try:
@@ -601,6 +602,7 @@ class ScoutSuiteParser:
             filtered_events = [e for e in new_events if e['finding']['level'].lower() in notify_severities]
             
             if not filtered_events:
+                self.logger.debug("No events match notification severity criteria")
                 return
                 
             # Group events by severity
@@ -615,24 +617,57 @@ class ScoutSuiteParser:
             subject = f"ScoutSuite Alert: {len(filtered_events)} new security findings"
             body = self._create_email_body(events_by_severity, filtered_events[0]['scan_info'])
             
-            # Send via SMTP or SES
-            if self.email_config.get('aws_region') and AWS_AVAILABLE:
-                self._send_via_ses(subject, body)
-            else:
-                self._send_via_smtp(subject, body)
-                
-            # Mark all events from this scan as notified
-            if self.session:
-                event_hashes = [e['event']['event_hash'] for e in new_events]
-                self.session.query(self.ScoutEvent).filter(
-                    self.ScoutEvent.event_hash.in_(event_hashes)
-                ).update({self.ScoutEvent.notified: True}, synchronize_session=False)
-                self.session.commit()
-                
-            self.logger.info(f"Sent notifications for {len(filtered_events)} new events")
+            # Attempt to send email with fallback handling
+            email_sent = False
+            last_error = None
             
+            # Try AWS SES first if configured
+            if self.email_config.get('aws_region') and AWS_AVAILABLE:
+                try:
+                    self._send_via_ses(subject, body)
+                    email_sent = True
+                except Exception as ses_error:
+                    last_error = ses_error
+                    self.logger.warning(f"AWS SES delivery failed, trying SMTP fallback: {ses_error}")
+            
+            # Fallback to SMTP if SES failed or not configured
+            if not email_sent:
+                try:
+                    self._send_via_smtp(subject, body)
+                    email_sent = True
+                except Exception as smtp_error:
+                    last_error = smtp_error
+                    self.logger.error(f"SMTP delivery also failed: {smtp_error}")
+            
+            if email_sent:
+                # Mark all events from this scan as notified only if email was sent successfully
+                if self.session:
+                    try:
+                        event_hashes = [e['event']['event_hash'] for e in new_events]
+                        self.session.query(self.ScoutEvent).filter(
+                            self.ScoutEvent.event_hash.in_(event_hashes)
+                        ).update({self.ScoutEvent.notified: True}, synchronize_session=False)
+                        self.session.commit()
+                        self.logger.info(f"Successfully sent notifications for {len(filtered_events)} new events")
+                    except Exception as db_error:
+                        self.logger.error(f"Failed to mark events as notified in database: {db_error}")
+                        # Don't re-raise - email was sent successfully
+            else:
+                # Log comprehensive error but don't fail the entire scan
+                self.logger.error(f"All email delivery methods failed. Last error: {last_error}")
+                self.logger.warning(f"Scan completed successfully but {len(filtered_events)} security events could not be emailed")
+                self.logger.info("Please check email configuration in .env file:")
+                self.logger.info("  - SMTP settings: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD")
+                self.logger.info("  - AWS SES settings: AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY")
+                self.logger.info("  - Recipient settings: EMAIL_RECIPIENTS")
+                
         except Exception as e:
-            self.logger.error(f"Failed to send notifications: {e}")
+            # Catch any other unexpected errors to prevent scan failure
+            self.logger.error(f"Unexpected error in notification system: {e}")
+            self.logger.warning("Scan completed successfully but notification system encountered an error")
+            if self.debug:
+                import traceback
+                self.logger.debug(f"Full notification error traceback: {traceback.format_exc()}")
     
     def _create_email_body(self, events_by_severity, scan_info):
         """Create HTML email body"""
@@ -668,20 +703,55 @@ class ScoutSuiteParser:
         return html
     
     def _send_via_smtp(self, subject, body):
-        """Send email via SMTP"""
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = self.email_config['smtp_from']
-        msg['To'] = ', '.join(self.email_config['recipients'])
-        
-        msg.attach(MIMEText(body, 'html'))
-        
-        with smtplib.SMTP(self.email_config['smtp_host'], self.email_config['smtp_port']) as server:
-            if self.email_config['smtp_use_tls']:
-                server.starttls()
-            if self.email_config['smtp_user']:
-                server.login(self.email_config['smtp_user'], self.email_config['smtp_password'])
-            server.send_message(msg)
+        """Send email via SMTP with graceful error handling"""
+        try:
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = self.email_config['smtp_from']
+            msg['To'] = ', '.join(self.email_config['recipients'])
+            
+            msg.attach(MIMEText(body, 'html'))
+            
+            # Connection with timeout to prevent hanging
+            server = smtplib.SMTP(self.email_config['smtp_host'], self.email_config['smtp_port'], timeout=30)
+            
+            try:
+                if self.email_config['smtp_use_tls']:
+                    server.starttls()
+                    
+                if self.email_config['smtp_user']:
+                    server.login(self.email_config['smtp_user'], self.email_config['smtp_password'])
+                    
+                server.send_message(msg)
+                self.logger.info("Email notification sent successfully via SMTP")
+                
+            finally:
+                try:
+                    server.quit()
+                except:
+                    pass  # Ignore quit errors
+                    
+        except smtplib.SMTPAuthenticationError as e:
+            self.logger.error(f"SMTP authentication failed: Invalid username/password for {self.email_config['smtp_user']}")
+            raise Exception(f"Email authentication failed - please check SMTP credentials")
+        except smtplib.SMTPRecipientsRefused as e:
+            self.logger.error(f"SMTP recipients refused: {e}")
+            raise Exception(f"Email recipients rejected by server - please check recipient addresses")
+        except smtplib.SMTPServerDisconnected as e:
+            self.logger.error(f"SMTP server disconnected unexpectedly: {e}")
+            raise Exception(f"Email server connection lost - please check SMTP server status")
+        except smtplib.SMTPConnectError as e:
+            self.logger.error(f"SMTP connection failed: Cannot connect to {self.email_config['smtp_host']}:{self.email_config['smtp_port']}")
+            raise Exception(f"Cannot connect to email server - please check SMTP host and port settings")
+        except smtplib.SMTPException as e:
+            self.logger.error(f"SMTP error: {e}")
+            raise Exception(f"Email delivery failed - SMTP error: {str(e)}")
+        except OSError as e:
+            self.logger.error(f"Network error connecting to SMTP server: {e}")
+            raise Exception(f"Network error - please check internet connection and SMTP server availability")
+        except Exception as e:
+            self.logger.error(f"Unexpected error sending email via SMTP: {e}")
+            raise Exception(f"Email delivery failed - unexpected error: {str(e)}")
     
     def _send_via_ses(self, subject, body):
         """Send email via AWS SES"""

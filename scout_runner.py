@@ -77,7 +77,7 @@ class ScoutRunner:
                     timeout=5
                 )
             except Exception as e:
-                print(f"Failed to send notification: {e}")
+                print(f"Notification failed but continuing cleanup: {e}")
         
         print("\nCleaning up temporary files...")
         self.cleanup_temp_dir()
@@ -536,18 +536,28 @@ class ScoutRunner:
         return thread_logger
             
     def send_failure_notification(self, subject, body, timeout=30):
-        """Send email notification for failures"""
+        """Send email notification for failures with graceful error handling"""
         if not os.getenv('ENABLE_EMAIL_NOTIFICATIONS', '').lower() == 'true':
+            self.logger.debug("Email notifications disabled")
             return
             
-        recipients = os.getenv('EMAIL_RECIPIENTS', '').split(',')
-        if not recipients or not recipients[0]:
+        recipients = [r.strip() for r in os.getenv('EMAIL_RECIPIENTS', '').split(',') if r.strip()]
+        if not recipients:
+            self.logger.debug("No email recipients configured")
             return
             
-        try:
-            # Try AWS SES first
-            if os.getenv('AWS_REGION'):
-                ses = boto3.client('ses', region_name=os.getenv('AWS_REGION'))
+        email_sent = False
+        last_error = None
+        
+        # Try AWS SES first if configured
+        if os.getenv('AWS_REGION'):
+            try:
+                ses = boto3.client(
+                    'ses', 
+                    region_name=os.getenv('AWS_REGION'),
+                    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+                )
                 ses.send_email(
                     Source=os.getenv('SMTP_FROM', 'scoutsuite-runner@localhost'),
                     Destination={'ToAddresses': recipients},
@@ -556,26 +566,68 @@ class ScoutRunner:
                         'Body': {'Html': {'Data': body}}
                     }
                 )
-            else:
-                # Fallback to SMTP with timeout
+                email_sent = True
+                self.logger.info("Failure notification sent via AWS SES")
+            except Exception as ses_error:
+                last_error = ses_error
+                self.logger.warning(f"AWS SES delivery failed, trying SMTP fallback: {ses_error}")
+        
+        # Fallback to SMTP if SES failed or not configured
+        if not email_sent:
+            try:
                 msg = MIMEMultipart()
                 msg['From'] = os.getenv('SMTP_FROM', 'scoutsuite-runner@localhost')
                 msg['To'] = ', '.join(recipients)
                 msg['Subject'] = subject
                 msg.attach(MIMEText(body, 'html'))
                 
-                server = smtplib.SMTP(os.getenv('SMTP_HOST'), int(os.getenv('SMTP_PORT', 587)), timeout=timeout)
-                if os.getenv('SMTP_USE_TLS', '').lower() == 'true':
-                    server.starttls()
-                if os.getenv('SMTP_USER'):
-                    server.login(os.getenv('SMTP_USER'), os.getenv('SMTP_PASSWORD'))
-                server.send_message(msg)
-                server.quit()
+                server = smtplib.SMTP(os.getenv('SMTP_HOST', 'localhost'), int(os.getenv('SMTP_PORT', 587)), timeout=timeout)
                 
-            self.logger.info("Failure notification sent")
-        except Exception as e:
-            self.logger.error(f"Failed to send notification: {e}")
-            raise  # Re-raise so caller can handle
+                try:
+                    if os.getenv('SMTP_USE_TLS', '').lower() == 'true':
+                        server.starttls()
+                    if os.getenv('SMTP_USER'):
+                        server.login(os.getenv('SMTP_USER'), os.getenv('SMTP_PASSWORD'))
+                    server.send_message(msg)
+                    email_sent = True
+                    self.logger.info("Failure notification sent via SMTP")
+                finally:
+                    try:
+                        server.quit()
+                    except:
+                        pass  # Ignore quit errors
+                        
+            except smtplib.SMTPAuthenticationError as e:
+                last_error = f"SMTP authentication failed - please check username/password"
+                self.logger.error(last_error)
+            except smtplib.SMTPRecipientsRefused as e:
+                last_error = f"SMTP recipients refused - please check recipient email addresses"
+                self.logger.error(last_error)
+            except smtplib.SMTPServerDisconnected as e:
+                last_error = f"SMTP server disconnected - please check server status"
+                self.logger.error(last_error)
+            except smtplib.SMTPConnectError as e:
+                last_error = f"Cannot connect to SMTP server - please check host and port settings"
+                self.logger.error(last_error)
+            except smtplib.SMTPException as e:
+                last_error = f"SMTP error: {str(e)}"
+                self.logger.error(last_error)
+            except OSError as e:
+                last_error = f"Network error - please check internet connection"
+                self.logger.error(last_error)
+            except Exception as e:
+                last_error = f"Unexpected email error: {str(e)}"
+                self.logger.error(last_error)
+        
+        if not email_sent:
+            self.logger.warning(f"All email delivery methods failed. Last error: {last_error}")
+            self.logger.info("Scan execution completed but failure notifications could not be sent")
+            self.logger.info("Please check email configuration in .env file:")
+            self.logger.info("  - ENABLE_EMAIL_NOTIFICATIONS=true")
+            self.logger.info("  - EMAIL_RECIPIENTS=your@email.com")
+            self.logger.info("  - SMTP settings: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD")
+            self.logger.info("  - Or AWS SES: AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY")
+            # Don't raise exception - email failure shouldn't stop the scan process
     
     def generate_summary_report(self, interrupted=False):
         """Generate detailed summary report with timing information"""
@@ -690,11 +742,14 @@ class ScoutRunner:
             
             # Send failure notification if there were any failures
             if (self.scan_results['failed_scan'] or self.scan_results['failed_parse'] or self.scan_results['errors']):
-                html_summary = summary.replace('\n', '<br>').replace(' ', '&nbsp;')
-                self.send_failure_notification(
-                    f"ScoutSuite Runner Failures - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                    f"<html><body><pre>{html_summary}</pre></body></html>"
-                )
+                try:
+                    html_summary = summary.replace('\n', '<br>').replace(' ', '&nbsp;')
+                    self.send_failure_notification(
+                        f"ScoutSuite Runner Failures - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        f"<html><body><pre>{html_summary}</pre></body></html>"
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to send failure notification, but scan completed: {e}")
                 
         except KeyboardInterrupt:
             # Don't re-raise here, let the signal handler deal with it
@@ -705,10 +760,13 @@ class ScoutRunner:
             self.scan_results['errors'].append(error_msg)
             
             # Send critical failure notification
-            self.send_failure_notification(
-                f"ScoutSuite Runner Critical Failure - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"<html><body><h3>Critical Error</h3><p>{error_msg}</p></body></html>"
-            )
+            try:
+                self.send_failure_notification(
+                    f"ScoutSuite Runner Critical Failure - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    f"<html><body><h3>Critical Error</h3><p>{error_msg}</p></body></html>"
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to send critical failure notification: {e}")
         finally:
             # Record end time
             self.end_time = time.time()
@@ -822,11 +880,14 @@ def main():
         summary = runner.generate_summary_report()
         print(summary)
         if (runner.scan_results['failed_scan'] or runner.scan_results['failed_parse'] or runner.scan_results['errors']):
-            html_summary = summary.replace('\n', '<br>').replace(' ', '&nbsp;')
-            runner.send_failure_notification(
-                f"ScoutSuite Runner Account Failure - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"<html><body><pre>{html_summary}</pre></body></html>"
-            )
+            try:
+                html_summary = summary.replace('\n', '<br>').replace(' ', '&nbsp;')
+                runner.send_failure_notification(
+                    f"ScoutSuite Runner Account Failure - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    f"<html><body><pre>{html_summary}</pre></body></html>"
+                )
+            except Exception as e:
+                runner.logger.error(f"Failed to send account failure notification, but scan completed: {e}")
     else:
         runner.scan_all_profiles(max_threads=args.multithread)
 
