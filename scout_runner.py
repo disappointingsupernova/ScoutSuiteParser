@@ -682,7 +682,6 @@ class ScoutRunner:
             # Generate and display summary
             summary = self.generate_summary_report()
             print(summary)
-            self.logger.info(summary.replace('\n', ' | '))
             
             # Send failure notification if there were any failures
             if (self.scan_results['failed_scan'] or self.scan_results['failed_parse'] or self.scan_results['errors']):
