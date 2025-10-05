@@ -117,6 +117,7 @@ class ScoutSuiteParser:
             __table_args__ = (
                 Index('idx_account_scan_time', 'account_id', 'scan_time'),
                 Index('idx_account_created', 'account_id', 'created_at'),
+                Index('idx_account_id', 'account_id'),
                 {'mysql_engine': 'InnoDB'},
             )
         
@@ -135,6 +136,7 @@ class ScoutSuiteParser:
                 Index('idx_scan_service', 'scan_id', 'service'),
                 Index('idx_service_level', 'service', 'level'),
                 Index('idx_scan_level', 'scan_id', 'level'),
+                Index('idx_level_service', 'level', 'service'),
                 {'mysql_engine': 'InnoDB'},
             )
         
@@ -157,6 +159,8 @@ class ScoutSuiteParser:
                 Index('idx_resolved_notified', 'resolved_at', 'notified'),
                 Index('idx_last_seen_resolved', 'last_seen', 'resolved_at'),
                 Index('idx_resource_id_type', 'resource_id', 'resource_type'),
+                Index('idx_resource_type_resolved', 'resource_type', 'resolved_at'),
+                Index('idx_last_seen_desc', 'last_seen'),
                 {'mysql_engine': 'InnoDB'},
             )
         
