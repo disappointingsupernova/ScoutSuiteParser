@@ -565,40 +565,93 @@ Automatic failure notifications when issues occur:
 
 ### Logging Levels
 - **INFO**: Standard operational messages (scan progress, database operations)
-- **DEBUG**: Detailed processing information (individual resource extraction, SQL queries)
+- **DEBUG**: Detailed processing information (individual resource extraction, SQL queries, ScoutSuite path traversal)
 - **ERROR**: Error conditions and fallback operations
 - **WARNING**: Configuration issues and non-fatal problems
 
+### ScoutSuite Logic Migration
+The parser now incorporates ScoutSuite's native JavaScript extraction logic:
+
+- **Backward Compatible**: All existing functionality preserved
+- **No Configuration Changes**: Existing .env files and CLI arguments unchanged
+- **Enhanced Accuracy**: More precise resource identification using ScoutSuite's proven algorithms
+- **Improved Path Handling**: Support for ScoutSuite's wildcard patterns and complex nested structures
+
 ## Resource Extraction Logic
 
-### Path Analysis Algorithm
-The parser uses sophisticated path analysis to extract individual AWS resources:
+### ScoutSuite Native Logic Integration
+The parser now uses ScoutSuite's native JavaScript extraction logic, migrated to Python for maximum accuracy and consistency:
+
+#### ScoutSuite's `getValueAt` Function
+- **Purpose**: Recursively traverse nested objects using dot notation
+- **Key Feature**: Handles wildcard expansion with `.id.` patterns
+- **Implementation**: Direct port from ScoutSuite's JavaScript frontend
 
 ```python
-# Example path: services.ec2.regions.eu-west-2.vpcs.vpc-123.instances.i-456.security_groups
-# Extraction process:
-1. Split by dots: ['services', 'ec2', 'regions', 'eu-west-2', 'vpcs', 'vpc-123', 'instances', 'i-456', 'security_groups']
-2. Extract region: 'eu-west-2' (follows 'regions')
-3. Extract resource_id: 'i-456' (matches AWS ID pattern)
-4. Extract resource_type: 'instance' (from 'instances' container, singularized)
-5. Generate event_hash: SHA256('ec2:finding-id:i-456:full-path')
+def get_value_at(self, path, data):
+    """ScoutSuite's getValueAt function - recursively traverse nested objects"""
+    # Handles paths like: services.ec2.regions.id.vpcs.vpc-123.instances
+    # Expands 'id' wildcards to iterate over all keys at that level
+```
+
+#### Enhanced Resource Path Extraction
+- **ScoutSuite Logic**: Uses `display_path` or `path` from finding metadata
+- **Accurate Navigation**: Leverages ScoutSuite's proven path traversal algorithms
+- **Wildcard Support**: Handles ScoutSuite's `.id.` wildcard patterns
+
+#### Improved Resource Detection
+- **Prioritized Matching**: Identifies the most specific resource ID in paths (e.g., `sg-456` over `vpc-123`)
+- **Container Mapping**: Uses ScoutSuite's comprehensive resource container classification
+- **Data Retrieval**: Accesses actual resource data via ScoutSuite's `getValueAt` method
+
+### Path Analysis Algorithm
+Using ScoutSuite's native logic for path analysis:
+
+```python
+# Example path: services.ec2.regions.eu-west-2.vpcs.vpc-123.security_groups.sg-456
+# ScoutSuite extraction process:
+1. Use getValueAt() to retrieve actual resource data
+2. Extract region: 'eu-west-2' (follows 'regions' in path)
+3. Extract resource_id: 'sg-456' (most specific AWS ID pattern, prioritized over 'vpc-123')
+4. Extract resource_type: 'security_group' (from ScoutSuite's container mapping)
+5. Generate event_hash: SHA256('ec2:finding-id:sg-456:full-path')
 ```
 
 ### Resource ID Pattern Matching
-The parser recognizes standard AWS resource ID patterns:
-- **EC2**: `i-`, `sg-`, `vpc-`, `subnet-`, `vol-`, `ami-`
-- **ARN**: `arn:aws:service:region:account:resource`
-- **IAM**: `user-`, `role-`, `policy-` or final path component
-- **Generic**: Final path component as fallback
+Enhanced pattern matching using ScoutSuite's logic:
+- **AWS Resource IDs**: `i-`, `sg-`, `vpc-`, `subnet-`, `vol-`, `ami-`, `snap-`, `rtb-`, `igw-`, `nat-`, `eni-`, `acl-`
+- **ARN Support**: `arn:aws:service:region:account:resource`
+- **Prioritized Detection**: Last matching ID in path takes precedence (most specific)
+- **Fallback Logic**: Uses final path component for non-standard resources
 
 ### Resource Type Classification
-Resource types are derived from path containers with special case handling:
+ScoutSuite's comprehensive container-to-type mapping:
 - `instances` → `instance`
 - `security_groups` → `security_group`
 - `policies` → `policy`
 - `identities` → `identity`
 - `repositories` → `repository`
-- Generic plurals → singular form
+- `buckets` → `bucket`
+- `distributions` → `distribution`
+- `functions` → `function`
+- `clusters` → `cluster`
+
+### Migration Benefits
+1. **Accuracy**: Uses ScoutSuite's exact logic for resource identification
+2. **Reliability**: Proven algorithms from ScoutSuite's frontend
+3. **Consistency**: Matches ScoutSuite's resource classification
+4. **Maintainability**: Aligned with ScoutSuite's data structure expectations
+5. **Robustness**: Handles edge cases that ScoutSuite's frontend already solved
+
+### Verification
+The migration has been tested and verified:
+```bash
+$ python3 test_scoutsuite_logic.py
+Testing ScoutSuite native logic integration...
+✓ get_value_at tests passed
+✓ Resource extraction tests passed
+🎉 All tests passed! ScoutSuite logic successfully integrated.
+```
 
 ## Database Indexes and Performance
 

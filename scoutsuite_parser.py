@@ -196,9 +196,65 @@ class ScoutSuiteParser:
         self.logger.error("No ScoutSuite results found in file")
         return None
         
+    def get_value_at(self, path, data):
+        """ScoutSuite's getValueAt function - recursively traverse nested objects"""
+        if not path:
+            return data
+            
+        current_path = path
+        value = data
+        
+        while current_path:
+            if '.' in current_path:
+                key = current_path[:current_path.index('.')]
+                current_path = current_path[current_path.index('.') + 1:]
+            else:
+                key = current_path
+                current_path = None
+                
+            try:
+                if key == 'id':
+                    # Handle wildcard expansion like ScoutSuite
+                    results = []
+                    if isinstance(value, dict):
+                        for k in value:
+                            sub_path = k + ('.' + current_path if current_path else '')
+                            sub_result = self.get_value_at(sub_path, value)
+                            if isinstance(sub_result, list):
+                                results.extend(sub_result)
+                            else:
+                                results.append(sub_result)
+                    return results
+                else:
+                    if isinstance(value, dict) and key in value:
+                        value = value[key]
+                    else:
+                        return None
+            except Exception as e:
+                self.logger.debug(f"Error traversing path {path} at key {key}: {e}")
+                return None
+                
+        return value
+    
+    def get_resource_path_from_finding(self, finding_path, finding_data):
+        """Extract resource path from finding path like ScoutSuite"""
+        if finding_path.endswith('.items'):
+            # Try to get display_path or path from finding metadata
+            display_path = finding_data.get('display_path')
+            if not display_path:
+                display_path = finding_data.get('path')
+            
+            if display_path:
+                path_array = display_path.split('.')
+                if path_array:
+                    path_array.pop()  # Remove last component
+                return 'services.' + '.'.join(path_array)
+        
+        return finding_path
+    
     def extract_findings(self, data):
-        """Extract key findings and individual events from ScoutSuite data"""
-        self.logger.info("Extracting findings and events...")
+        """Extract key findings and individual events from ScoutSuite data using native logic"""
+        self.logger.info("Extracting findings and events using ScoutSuite native logic...")
         findings = []
         events = []
         account_id = data.get('account_id', 'unknown')
@@ -218,7 +274,7 @@ class ScoutSuiteParser:
             'total_findings': 0
         }
         
-        # Extract findings from services
+        # Extract findings from services using ScoutSuite's structure
         services = data.get('services', {})
         self.logger.info(f"Processing {len(services)} services...")
         
@@ -244,16 +300,21 @@ class ScoutSuiteParser:
                     'events': []
                 }
                 
-                # Extract individual flagged items
+                # Use ScoutSuite's native item extraction
                 flagged_items = finding_data.get('items', [])
                 if flagged_items:
                     self.logger.debug(f"    {finding_id}: {len(flagged_items)} flagged items")
                     
-                for item_path in flagged_items:
-                    event = self._extract_event_from_path(item_path, service_name, finding_id, data)
-                    if event:
-                        finding['events'].append(event)
-                        events.append(event)
+                    # Get resource path for this finding
+                    finding_path = f"services.{service_name}.findings.{finding_id}"
+                    resource_path = self.get_resource_path_from_finding(finding_path + '.items', finding_data)
+                    
+                    # Extract events using ScoutSuite's logic
+                    for item_path in flagged_items:
+                        event = self._extract_event_using_scoutsuite_logic(item_path, service_name, finding_id, resource_path, data)
+                        if event:
+                            finding['events'].append(event)
+                            events.append(event)
                 
                 findings.append(finding)
                 
@@ -261,94 +322,116 @@ class ScoutSuiteParser:
         self.logger.info(f"Extracted {len(findings)} findings with {len(events)} total events")
         return scan_info, findings, events
         
-    def _extract_event_from_path(self, item_path, service, finding_id, data):
-        """Extract individual event details from ScoutSuite item path"""
+    def _extract_event_using_scoutsuite_logic(self, item_path, service, finding_id, resource_path, data):
+        """Extract individual event using ScoutSuite's native logic"""
         try:
             self.logger.debug(f"      Processing path: {item_path}")
             
-            # Parse the path to extract resource details
+            # Use ScoutSuite's getValueAt to get the actual resource data
+            resource_data = self.get_value_at(item_path, data)
+            
+            # Parse path components using ScoutSuite's logic
             path_parts = item_path.split('.')
+            resource_path_parts = resource_path.split('.') if resource_path else []
             
-            # Extract key information from path structure
+            # Extract region using ScoutSuite's pattern
             region = None
-            resource_id = None
-            resource_name = None
-            resource_type = None
-            
-            # Analyze path parts to extract information
             for i, part in enumerate(path_parts):
-                # Extract region
                 if i > 0 and path_parts[i-1] == 'regions':
                     region = part
-                
-                # Extract resource ID patterns
-                if part.startswith(('i-', 'sg-', 'vpc-', 'subnet-', 'vol-', 'ami-', 'arn:', 'user-', 'role-', 'policy-')):
-                    resource_id = part
-                    
-                # For IAM users, roles, policies - the name is often the last part
-                if service == 'iam' and i == len(path_parts) - 1 and not resource_id:
-                    resource_id = part
-                    resource_name = part
-                    
-                # For other services, try to get the actual resource identifier
-                if not resource_id and i == len(path_parts) - 1:
-                    resource_id = part
-            
-            # Navigate to the actual data to get resource details
-            current = data
-            details = {}
-            
-            try:
-                for part in path_parts:
-                    if isinstance(current, dict) and part in current:
-                        current = current[part]
-                    else:
-                        break
-                        
-                # Extract resource name and details if we found the object
-                if isinstance(current, dict):
-                    resource_name = resource_name or current.get('name') or current.get('Name') or current.get('id', resource_id)
-                    
-                    # Store minimal details
-                    for key in ['name', 'Name', 'id', 'arn', 'state', 'status', 'region']:
-                        if key in current:
-                            details[key] = current[key]
-            except:
-                pass  # If navigation fails, continue with what we have
-            
-            # Universal resource type extraction - find the resource container
-            # Skip 'services', 'regions' and look for actual resource containers
-            skip_parts = {'services', 'regions', 'id', 'vpcs'}
-            
-            for part in path_parts:
-                if part not in skip_parts and part.endswith('s') and len(part) > 3:
-                    # Handle special cases
-                    if part == 'policies':
-                        resource_type = 'policy'
-                    elif part == 'identities':
-                        resource_type = 'identity'
-                    elif part == 'repositories':
-                        resource_type = 'repository'
-                    elif part == 'activities':
-                        resource_type = 'activity'
-                    elif part == 'security_groups':
-                        resource_type = 'security_group'
-                    else:
-                        resource_type = part.rstrip('s')  # Remove plural
                     break
             
-            # If no resource container found, use service name
+            # Extract resource ID using ScoutSuite's patterns
+            resource_id = None
+            resource_name = None
+            
+            # Look for AWS resource ID patterns - prioritize the last matching ID in the path
+            aws_id_patterns = ['i-', 'sg-', 'vpc-', 'subnet-', 'vol-', 'ami-', 'snap-', 'rtb-', 'igw-', 'nat-', 'eni-', 'acl-']
+            for part in reversed(path_parts):  # Start from the end to get the most specific resource
+                if any(part.startswith(pattern) for pattern in aws_id_patterns) or part.startswith('arn:'):
+                    resource_id = part
+                    break
+            
+            # For IAM and other services, use the last meaningful component
+            if not resource_id:
+                # Skip generic path components
+                skip_components = {'services', 'regions', 'id', 'vpcs', 'subnets', 'instances', 'security_groups', 'policies', 'users', 'roles', 'groups'}
+                for part in reversed(path_parts):
+                    if part not in skip_components and not part.endswith('s'):
+                        resource_id = part
+                        break
+                
+                # If still no resource_id, use the last component
+                if not resource_id and path_parts:
+                    resource_id = path_parts[-1]
+            
+            # Extract resource type using ScoutSuite's container logic
+            resource_type = None
+            resource_containers = {
+                'instances': 'instance',
+                'security_groups': 'security_group',
+                'vpcs': 'vpc',
+                'subnets': 'subnet',
+                'volumes': 'volume',
+                'snapshots': 'snapshot',
+                'images': 'image',
+                'policies': 'policy',
+                'users': 'user',
+                'roles': 'role',
+                'groups': 'group',
+                'buckets': 'bucket',
+                'keys': 'key',
+                'distributions': 'distribution',
+                'functions': 'function',
+                'clusters': 'cluster',
+                'repositories': 'repository',
+                'identities': 'identity'
+            }
+            
+            # Find the resource container in the path - prioritize the last container
+            for part in reversed(path_parts):  # Start from the end to get the most specific container
+                if part in resource_containers:
+                    resource_type = resource_containers[part]
+                    break
+            
+            # Fallback to service name if no container found
             if not resource_type:
                 resource_type = service
+            
+            # Extract resource details from the actual data
+            details = {}
+            if isinstance(resource_data, dict):
+                # Get resource name from data
+                resource_name = (resource_data.get('name') or 
+                               resource_data.get('Name') or 
+                               resource_data.get('id') or 
+                               resource_data.get('arn') or 
+                               resource_id)
+                
+                # Store key details
+                detail_keys = ['name', 'Name', 'id', 'arn', 'state', 'status', 'region', 'availability_zone']
+                for key in detail_keys:
+                    if key in resource_data:
+                        details[key] = resource_data[key]
+            
+            # Use resource_id as name if no name found
+            if not resource_name:
+                resource_name = resource_id
+            
+            # Handle configuration findings (no specific resource)
+            if not resource_id or resource_id in ['notconfigured', 'false', 'true']:
+                resource_id = f"{service}_{finding_id}"
+                resource_name = finding_id.replace('_', ' ').title()
+                resource_type = 'configuration'
             
             # Create event hash for deduplication
             event_data = f"{service}:{finding_id}:{resource_id}:{item_path}"
             event_hash = hashlib.sha256(event_data.encode()).hexdigest()
             
             result = {
-                'resource_id': resource_id or item_path.split('.')[-1],
-                'resource_name': resource_name or resource_id,
-                'resource_type': resource_type or 'unknown',
+                'resource_id': resource_id,
+                'resource_name': resource_name,
+                'resource_type': resource_type,
                 'region': region,
                 'item_path': item_path,
                 'details': details,
@@ -360,6 +443,9 @@ class ScoutSuiteParser:
             
         except Exception as e:
             self.logger.error(f"Error extracting event from path {item_path}: {e}")
+            if self.debug:
+                import traceback
+                self.logger.debug(f"Full traceback: {traceback.format_exc()}")
             return None
         
     def save_to_db(self, scan_info, findings, events):
