@@ -6,11 +6,179 @@ $user = $_ENV['DB_USER'] ?? 'scoutsuite_user';
 $pass = $_ENV['DB_PASSWORD'] ?? 'your_password';
 $db = $_ENV['DB_NAME'] ?? 'scoutsuite_db';
 
-try {
-    $pdo = new PDO("mysql:host=$host;port=$port;dbname=$db", $user, $pass);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
-    die("Database connection failed: " . $e->getMessage());
+// Database health check function
+function checkDatabaseHealth($host, $port, $user, $pass, $db) {
+    $health = [
+        'connected' => false,
+        'database_exists' => false,
+        'tables_exist' => false,
+        'tables_populated' => false,
+        'error' => null,
+        'missing_tables' => [],
+        'table_counts' => []
+    ];
+    
+    try {
+        // Test basic connection
+        $pdo = new PDO("mysql:host=$host;port=$port", $user, $pass);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $health['connected'] = true;
+        
+        // Check if database exists
+        $stmt = $pdo->prepare("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?");
+        $stmt->execute([$db]);
+        if ($stmt->fetch()) {
+            $health['database_exists'] = true;
+            
+            // Connect to specific database
+            $pdo = new PDO("mysql:host=$host;port=$port;dbname=$db", $user, $pass);
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            
+            // Check required tables
+            $required_tables = ['scout_scans', 'scout_findings', 'scout_events', 'scout_event_findings'];
+            $existing_tables = [];
+            
+            $stmt = $pdo->query("SHOW TABLES");
+            while ($row = $stmt->fetch(PDO::FETCH_NUM)) {
+                $existing_tables[] = $row[0];
+            }
+            
+            $health['missing_tables'] = array_diff($required_tables, $existing_tables);
+            $health['tables_exist'] = empty($health['missing_tables']);
+            
+            // Check table populations if tables exist
+            if ($health['tables_exist']) {
+                foreach ($required_tables as $table) {
+                    $stmt = $pdo->query("SELECT COUNT(*) FROM $table");
+                    $count = $stmt->fetchColumn();
+                    $health['table_counts'][$table] = $count;
+                }
+                $health['tables_populated'] = $health['table_counts']['scout_scans'] > 0;
+            }
+        }
+        
+        return [$pdo, $health];
+        
+    } catch (PDOException $e) {
+        $health['error'] = $e->getMessage();
+        return [null, $health];
+    }
+}
+
+// Perform health check
+list($pdo, $db_health) = checkDatabaseHealth($host, $port, $user, $pass, $db);
+
+// If we have critical database issues, show error page
+if (!$db_health['connected'] || !$db_health['database_exists'] || !$db_health['tables_exist']) {
+    showDatabaseErrorPage($db_health);
+    exit;
+}
+
+function showDatabaseErrorPage($health) {
+    ?>
+    <!DOCTYPE html>
+    <html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>ScoutSuite Dashboard - Database Issue</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+        <style>
+            .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        </style>
+    </head>
+    <body class="bg-light">
+    <nav class="navbar navbar-expand-lg gradient-bg text-white mb-4">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1 text-white">
+                <i class="bi bi-shield-exclamation"></i> ScoutSuite Security Dashboard
+            </span>
+        </div>
+    </nav>
+    
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-lg-8">
+                <?php if (!$health['connected']): ?>
+                <div class="alert alert-danger" role="alert">
+                    <h4 class="alert-heading"><i class="bi bi-exclamation-triangle-fill"></i> Database Connection Failed</h4>
+                    <p>Unable to connect to the MySQL/MariaDB database server.</p>
+                    <hr>
+                    <p class="mb-0"><strong>Error:</strong> <?= htmlspecialchars($health['error']) ?></p>
+                    <p class="mb-0"><strong>Host:</strong> <?= htmlspecialchars($GLOBALS['host']) ?>:<?= htmlspecialchars($GLOBALS['port']) ?></p>
+                    <p class="mb-0"><strong>Database:</strong> <?= htmlspecialchars($GLOBALS['db']) ?></p>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header bg-danger text-white">
+                        <h5 class="mb-0"><i class="bi bi-tools"></i> Troubleshooting Steps</h5>
+                    </div>
+                    <div class="card-body">
+                        <ol>
+                            <li><strong>Check Database Server:</strong> Ensure MySQL/MariaDB is running</li>
+                            <li><strong>Verify Credentials:</strong> Check DB_HOST, DB_PORT, DB_USER, DB_PASSWORD in .env file</li>
+                            <li><strong>Test Connection:</strong> <code>mysql -h <?= htmlspecialchars($GLOBALS['host']) ?> -P <?= htmlspecialchars($GLOBALS['port']) ?> -u <?= htmlspecialchars($GLOBALS['user']) ?> -p</code></li>
+                            <li><strong>Check Firewall:</strong> Ensure port <?= htmlspecialchars($GLOBALS['port']) ?> is accessible</li>
+                        </ol>
+                    </div>
+                </div>
+                
+                <?php elseif (!$health['database_exists']): ?>
+                <div class="alert alert-warning" role="alert">
+                    <h4 class="alert-heading"><i class="bi bi-database-exclamation"></i> Database Not Found</h4>
+                    <p>Connected to MySQL server, but database <strong><?= htmlspecialchars($GLOBALS['db']) ?></strong> does not exist.</p>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header bg-warning text-dark">
+                        <h5 class="mb-0"><i class="bi bi-tools"></i> Setup Instructions</h5>
+                    </div>
+                    <div class="card-body">
+                        <p>Create the database manually:</p>
+                        <pre class="bg-light p-3 rounded"><code>mysql -u root -p -e "CREATE DATABASE <?= htmlspecialchars($GLOBALS['db']) ?>;"
+mysql -u root -p -e "GRANT ALL PRIVILEGES ON <?= htmlspecialchars($GLOBALS['db']) ?>.* TO '<?= htmlspecialchars($GLOBALS['user']) ?>'@'%';"
+mysql -u root -p -e "FLUSH PRIVILEGES;"</code></pre>
+                        <p class="mb-0">Then run the ScoutSuite parser to create tables automatically.</p>
+                    </div>
+                </div>
+                
+                <?php elseif (!$health['tables_exist']): ?>
+                <div class="alert alert-info" role="alert">
+                    <h4 class="alert-heading"><i class="bi bi-table"></i> Database Tables Missing</h4>
+                    <p>Database exists but required ScoutSuite tables are missing.</p>
+                    <p><strong>Missing tables:</strong> <?= implode(', ', $health['missing_tables']) ?></p>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0"><i class="bi bi-play-circle"></i> Next Steps</h5>
+                    </div>
+                    <div class="card-body">
+                        <p>Run the ScoutSuite parser to create the required tables:</p>
+                        <pre class="bg-light p-3 rounded"><code># Run a scan to create tables automatically
+python3 scout_runner.py --account your-account
+
+# Or run parser with any results file
+python3 scoutsuite_parser.py results.js</code></pre>
+                        <p class="mb-0">Tables will be created automatically on first run.</p>
+                    </div>
+                </div>
+                <?php endif; ?>
+                
+                <div class="mt-4 text-center">
+                    <button class="btn btn-primary" onclick="location.reload()">
+                        <i class="bi bi-arrow-clockwise"></i> Retry Connection
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    </body>
+    </html>
+    <?php
 }
 
 // Get filter parameters from POST or GET
@@ -132,6 +300,19 @@ $stats = $stmt_stats->fetch(PDO::FETCH_ASSOC);
 </nav>
 
 <div class="container-fluid">
+    <!-- Database Health Warning -->
+    <?php if (!$db_health['tables_populated']): ?>
+    <div class="alert alert-warning alert-dismissible fade show" role="alert">
+        <h5 class="alert-heading"><i class="bi bi-info-circle"></i> No Data Available</h5>
+        <p>Database tables exist but contain no scan data. Run ScoutSuite scans to populate the dashboard.</p>
+        <hr>
+        <p class="mb-0">
+            <strong>Quick start:</strong> <code>python3 scout_runner.py --account your-account</code>
+        </p>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    <?php endif; ?>
+    
     <!-- Stats Cards -->
     <div class="row mb-4">
         <div class="col-lg-2 col-md-4 col-sm-6 mb-3">
