@@ -228,11 +228,17 @@ class ScoutSuiteParser:
                 self.logger.info(f"  {service_name}: {len(service_findings)} findings")
             
             for finding_id, finding_data in service_findings.items():
+                flagged_items_count = finding_data.get('flagged_items', 0)
+                
+                # Skip findings with no flagged items (no issues found)
+                if flagged_items_count == 0:
+                    continue
+                    
                 finding = {
                     'service': service_name,
                     'finding_id': finding_id,
                     'level': finding_data.get('level', 'unknown'),
-                    'flagged_items': finding_data.get('flagged_items', 0),
+                    'flagged_items': flagged_items_count,
                     'checked_items': finding_data.get('checked_items', 0),
                     'description': finding_data.get('description', ''),
                     'events': []
