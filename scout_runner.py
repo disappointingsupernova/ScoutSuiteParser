@@ -271,16 +271,26 @@ class ScoutRunner:
             self.logger.error(f"Failed to check dependencies: {e}")
             return False
         
+    def _get_aws_config(self):
+        """Get AWS config (cached)"""
+        if not hasattr(self, '_aws_config'):
+            config_path = Path.home() / ".aws" / "config"
+            if not config_path.exists():
+                self.logger.error("AWS config file not found at ~/.aws/config")
+                self._aws_config = None
+                return None
+                
+            config = configparser.ConfigParser()
+            config.read(config_path)
+            self._aws_config = config
+        return self._aws_config
+    
     def get_aws_profiles(self):
         """Get AWS profiles from ~/.aws/config"""
-        config_path = Path.home() / ".aws" / "config"
-        if not config_path.exists():
-            self.logger.error("AWS config file not found at ~/.aws/config")
+        config = self._get_aws_config()
+        if not config:
             return []
             
-        config = configparser.ConfigParser()
-        config.read(config_path)
-        
         profiles = []
         for section in config.sections():
             if section.startswith('profile '):
@@ -293,12 +303,9 @@ class ScoutRunner:
     
     def get_profiles_by_account_id(self, account_id):
         """Find profiles that match the given account ID"""
-        config_path = Path.home() / ".aws" / "config"
-        if not config_path.exists():
+        config = self._get_aws_config()
+        if not config:
             return []
-            
-        config = configparser.ConfigParser()
-        config.read(config_path)
         
         matching_profiles = []
         for section in config.sections():
@@ -778,9 +785,6 @@ class ScoutRunner:
         """Scan profiles one by one (original behavior)"""
         for profile in profiles:
             self.logger.info(f"Processing profile {profile}...")
-            # Track that we're attempting this profile
-            if profile not in self.scan_results['attempted']:
-                self.scan_results['attempted'].append(profile)
             try:
                 self.scan_profile(profile)
             except KeyboardInterrupt:
@@ -842,10 +846,7 @@ def main():
         runner.install_system_deps()
         runner.setup_scoutsuite()
         
-    # Run healthcheck before scanning
-    if not runner.healthcheck():
-        runner.logger.error("Healthcheck failed. Please run --setup to fix dependencies.")
-        return
+    # Skip automatic healthcheck for performance - run manually with --healthcheck if needed
         
     if args.account:
         profiles_to_scan = runner.resolve_account_parameter(args.account)
@@ -863,9 +864,6 @@ def main():
                 # Scan multiple profiles
                 for profile in profiles_to_scan:
                     runner.logger.info(f"Processing profile {profile}...")
-                    # Track that we're attempting this profile
-                    if profile not in runner.scan_results['attempted']:
-                        runner.scan_results['attempted'].append(profile)
                     try:
                         runner.scan_profile(profile)
                     except KeyboardInterrupt:
