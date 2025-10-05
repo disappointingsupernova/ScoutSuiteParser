@@ -329,7 +329,25 @@ python3 scoutsuite_parser.py results.js
 python3 scoutsuite_parser.py results.js --debug
 ```
 
-### Command Line Arguments
+### Scout Runner Command Line Arguments
+```bash
+# Setup ScoutSuite environment
+python3 scout_runner.py --setup
+
+# Scan all AWS profiles
+python3 scout_runner.py
+
+# Scan specific profile
+python3 scout_runner.py --account production
+
+# Debug mode with detailed logging
+python3 scout_runner.py --debug
+
+# Combine options
+python3 scout_runner.py --account staging --debug
+```
+
+### Manual Parser Command Line Arguments
 ```bash
 # Override database settings
 python3 scoutsuite_parser.py results.js \
@@ -340,15 +358,37 @@ python3 scoutsuite_parser.py results.js \
   --debug
 ```
 
-### Scout Runner Features
-The `scout_runner.py` script provides automated scanning capabilities:
+### Scout Runner Automation
 
-- **Automatic Setup**: Downloads and configures ScoutSuite in a virtual environment
-- **Multi-Account Support**: Scans all profiles from `~/.aws/config`
-- **Single Account Mode**: Target specific AWS accounts with `--account`
-- **System Dependencies**: Automatically installs required packages (Ubuntu/RHEL)
-- **Temporary Storage**: Uses temporary directories for scan results
-- **Integrated Processing**: Automatically processes results through the parser
+#### Overview
+The `scout_runner.py` script provides complete automation for ScoutSuite scanning and processing:
+
+- **Environment Management**: Automatically downloads ScoutSuite and creates isolated virtual environment
+- **Multi-Platform Support**: Handles system dependencies for Ubuntu/Debian and RHEL/CentOS
+- **AWS Integration**: Reads all profiles from `~/.aws/config` for comprehensive scanning
+- **Selective Scanning**: Target specific accounts with `--account` parameter
+- **Automated Processing**: Seamlessly processes scan results through the parser
+- **Cleanup Management**: Uses temporary directories with automatic cleanup
+
+#### Setup Process
+1. **System Dependencies**: Installs python3-pip, python3-venv, python3-dev, git
+2. **ScoutSuite Download**: Clones latest ScoutSuite from GitHub
+3. **Virtual Environment**: Creates isolated Python environment for ScoutSuite
+4. **Dependency Installation**: Installs ScoutSuite and its dependencies
+
+#### Scanning Workflow
+1. **Profile Discovery**: Reads AWS profiles from `~/.aws/config`
+2. **Temporary Directory**: Creates unique temp directory for each scan
+3. **ScoutSuite Execution**: Runs ScoutSuite with appropriate profile
+4. **Result Processing**: Automatically processes JS results through parser
+5. **Database Storage**: Saves findings and events to database
+6. **Cleanup**: Removes temporary files after processing
+
+#### Error Handling
+- **Individual Scan Failures**: Continues processing other profiles if one fails
+- **Missing Dependencies**: Automatically installs required system packages
+- **AWS Profile Issues**: Logs errors but continues with remaining profiles
+- **Processing Failures**: Reports failures but doesn't stop batch processing
 
 ### Logging Levels
 - **INFO**: Standard operational messages (scan progress, database operations)
