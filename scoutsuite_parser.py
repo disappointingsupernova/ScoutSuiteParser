@@ -473,6 +473,10 @@ class ScoutSuiteParser:
                 resolved_count += 1
         
         self.session.commit()
+        
+        # Generate detailed statistics
+        self._print_scan_statistics(scan_info, findings, events, new_events, resolved_count)
+        
         self.logger.info(f"Saved scan {scan_id} with {len(findings)} findings and {len(events)} events to database")
         self.logger.info(f"Found {len(new_events)} new events, marked {resolved_count} events as resolved")
         
@@ -484,6 +488,75 @@ class ScoutSuiteParser:
             self.logger.info("Email notifications disabled")
         
         return new_events
+    
+    def _print_scan_statistics(self, scan_info, findings, events, new_events, resolved_count):
+        """Print detailed scan statistics"""
+        print(f"\n{'='*60}")
+        print(f"SCAN RESULTS FOR ACCOUNT: {scan_info['account_id']}")
+        print(f"{'='*60}")
+        print(f"Scan Time: {scan_info['scan_time']}")
+        print(f"ScoutSuite Version: {scan_info['version']}")
+        print(f"Total Findings: {len(findings)}")
+        print(f"Total Events: {len(events)}")
+        print(f"New Events: {len(new_events)}")
+        print(f"Resolved Events: {resolved_count}")
+        
+        # Findings by service
+        service_stats = {}
+        for finding in findings:
+            service = finding['service']
+            if service not in service_stats:
+                service_stats[service] = {'findings': 0, 'events': 0}
+            service_stats[service]['findings'] += 1
+            service_stats[service]['events'] += len(finding.get('events', []))
+        
+        if service_stats:
+            print(f"\nFINDINGS BY SERVICE:")
+            for service, stats in sorted(service_stats.items()):
+                print(f"  {service}: {stats['findings']} findings, {stats['events']} events")
+        
+        # Findings by severity
+        severity_stats = {}
+        for finding in findings:
+            level = finding['level']
+            if level not in severity_stats:
+                severity_stats[level] = {'findings': 0, 'events': 0}
+            severity_stats[level]['findings'] += 1
+            severity_stats[level]['events'] += len(finding.get('events', []))
+        
+        if severity_stats:
+            print(f"\nFINDINGS BY SEVERITY:")
+            for level in ['critical', 'high', 'medium', 'low', 'warning', 'danger']:
+                if level in severity_stats:
+                    stats = severity_stats[level]
+                    print(f"  {level.upper()}: {stats['findings']} findings, {stats['events']} events")
+        
+        # Events by resource type
+        resource_stats = {}
+        for event in events:
+            resource_type = event['resource_type']
+            region = event['region'] or 'global'
+            key = f"{resource_type} ({region})"
+            resource_stats[key] = resource_stats.get(key, 0) + 1
+        
+        if resource_stats:
+            print(f"\nEVENTS BY RESOURCE TYPE:")
+            for resource_key, count in sorted(resource_stats.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {resource_key}: {count} events")
+        
+        # New events by severity (if any)
+        if new_events:
+            new_severity_stats = {}
+            for event_data in new_events:
+                level = event_data['finding']['level']
+                new_severity_stats[level] = new_severity_stats.get(level, 0) + 1
+            
+            print(f"\nNEW EVENTS BY SEVERITY:")
+            for level in ['critical', 'high', 'medium', 'low', 'warning', 'danger']:
+                if level in new_severity_stats:
+                    print(f"  {level.upper()}: {new_severity_stats[level]} new events")
+        
+        print(f"{'='*60}\n")
         
     def output_json(self, scan_info, findings, events):
         """Output parsed data as JSON to console (debug mode only)"""
@@ -500,7 +573,15 @@ class ScoutSuiteParser:
             }
             print(json.dumps(output, indent=2, default=str))
         else:
-            self.logger.info(f"Parsed {len(findings)} findings with {len(events)} events for account {scan_info['account_id']}")
+            # Show statistics even in non-debug mode
+            print(f"\n{'='*60}")
+            print(f"SCAN RESULTS FOR ACCOUNT: {scan_info['account_id']}")
+            print(f"{'='*60}")
+            print(f"Scan Time: {scan_info['scan_time']}")
+            print(f"ScoutSuite Version: {scan_info['version']}")
+            print(f"Total Findings: {len(findings)}")
+            print(f"Total Events: {len(events)}")
+            print(f"{'='*60}\n")
             self.logger.info("Use --debug flag to see detailed JSON output")
         
     def _send_notifications(self, new_events, scan_id):
