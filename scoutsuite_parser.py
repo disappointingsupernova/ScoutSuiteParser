@@ -346,7 +346,29 @@ class ScoutSuiteParser:
             resource_name = None
             
             # Look for AWS resource ID patterns - prioritize the last matching ID in the path
-            aws_id_patterns = ['i-', 'sg-', 'vpc-', 'subnet-', 'vol-', 'ami-', 'snap-', 'rtb-', 'igw-', 'nat-', 'eni-', 'acl-']
+            aws_id_patterns = [
+                'i-',           # EC2 instances
+                'sg-',          # Security groups
+                'vpc-',         # VPCs
+                'subnet-',      # Subnets
+                'vol-',         # EBS volumes
+                'ami-',         # AMI images
+                'snap-',        # EBS snapshots
+                'rtb-',         # Route tables
+                'igw-',         # Internet gateways
+                'nat-',         # NAT gateways
+                'eni-',         # Network interfaces
+                'acl-',         # Network ACLs
+                'pcx-',         # Peering connections
+                'fl-',          # Flow logs
+                'dopt-',        # DHCP options
+                'eipalloc-',    # Elastic IP allocations
+                'eipassoc-',    # Elastic IP associations
+                'vpce-',        # VPC endpoints
+                'vgw-',         # Virtual gateways
+                'cgw-',         # Customer gateways
+                'vpn-',         # VPN connections
+            ]
             for part in reversed(path_parts):  # Start from the end to get the most specific resource
                 if any(part.startswith(pattern) for pattern in aws_id_patterns) or part.startswith('arn:'):
                     resource_id = part
@@ -357,41 +379,314 @@ class ScoutSuiteParser:
                 # Skip generic path components but keep meaningful ones
                 skip_components = {'services', 'regions', 'id', 'vpcs', 'subnets', 'instances', 'security_groups'}
                 
-                # For IAM, look for actual resource identifiers
+                # Service-specific resource extraction using ScoutSuite patterns
                 if service == 'iam':
-                    # Look for actual IAM resource names/IDs (not containers)
+                    # IAM resource extraction - skip containers but keep actual resource names
+                    iam_containers = ['policies', 'users', 'roles', 'groups', 'password_policy', 'root_account', 'credential_reports', 'inline_policies']
+                    iam_config_terms = ['notconfigured', 'MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention']
                     for part in reversed(path_parts):
                         if (part not in skip_components and 
-                            part not in ['policies', 'users', 'roles', 'groups', 'password_policy', 'root_account'] and
-                            part not in ['notconfigured', 'secure_transport_enabled', 'logging', 'mfa_delete'] and
-                            len(part) > 2):  # Avoid single chars or very short meaningless parts
+                            part not in iam_containers and
+                            part not in iam_config_terms and
+                            len(part) > 2 and not part.isdigit()):
                             resource_id = part
                             break
-                else:
-                    # For non-IAM services
+                            
+                elif service == 's3':
+                    # S3 resource extraction - skip configuration settings
+                    s3_config_terms = ['secure_transport_enabled', 'logging', 'mfa_delete', 'versioning', 'encryption', 'public_access_block_configuration']
+                    s3_containers = ['buckets', 'keys', 'objects', 'acls']
                     for part in reversed(path_parts):
-                        if part not in skip_components and not part.endswith('s') and len(part) > 2:
+                        if (part not in skip_components and 
+                            part not in s3_containers and
+                            part not in s3_config_terms and
+                            len(part) > 2):
+                            resource_id = part
+                            break
+                            
+                elif service == 'ec2':
+                    # EC2 resource extraction - handle regional settings and other resources
+                    ec2_containers = ['instances', 'security_groups', 'volumes', 'snapshots', 'images', 'regional_settings']
+                    ec2_config_terms = ['NoDefaultEBSEncryption', 'ebs_encryption_default', 'ebs_default_encryption_key_id']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in ec2_containers and
+                            part not in ec2_config_terms and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'cloudtrail':
+                    # CloudTrail resource extraction
+                    cloudtrail_containers = ['trails', 'regions']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in cloudtrail_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'cloudwatch':
+                    # CloudWatch resource extraction
+                    cloudwatch_containers = ['alarms', 'metric_filters']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in cloudwatch_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'rds':
+                    # RDS resource extraction
+                    rds_containers = ['instances', 'snapshots', 'parameter_groups', 'security_groups', 'subnet_groups']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in rds_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'elb' or service == 'elbv2':
+                    # ELB resource extraction
+                    elb_containers = ['elbs', 'lbs', 'elb_policies', 'listeners']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in elb_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'awslambda':
+                    # Lambda resource extraction
+                    lambda_containers = ['functions']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in lambda_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'kms':
+                    # KMS resource extraction
+                    kms_containers = ['keys']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in kms_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'sns':
+                    # SNS resource extraction
+                    sns_containers = ['topics']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in sns_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'sqs':
+                    # SQS resource extraction
+                    sqs_containers = ['queues']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in sqs_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'cloudfront':
+                    # CloudFront resource extraction
+                    cloudfront_containers = ['distributions']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in cloudfront_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'route53':
+                    # Route53 resource extraction
+                    route53_containers = ['hosted_zones', 'domains']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in route53_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'dynamodb':
+                    # DynamoDB resource extraction
+                    dynamodb_containers = ['tables']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in dynamodb_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'secretsmanager':
+                    # Secrets Manager resource extraction
+                    secrets_containers = ['secrets']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in secrets_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'acm':
+                    # ACM resource extraction
+                    acm_containers = ['certificates']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in acm_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'config':
+                    # Config resource extraction
+                    config_containers = ['recorders', 'rules']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in config_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'cloudformation':
+                    # CloudFormation resource extraction
+                    cloudformation_containers = ['stacks']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in cloudformation_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'ses':
+                    # SES resource extraction
+                    ses_containers = ['identities']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in ses_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'emr':
+                    # EMR resource extraction
+                    emr_containers = ['clusters']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in emr_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'redshift':
+                    # Redshift resource extraction
+                    redshift_containers = ['clusters', 'parameter_groups', 'security_groups']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in redshift_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'elasticache':
+                    # ElastiCache resource extraction
+                    elasticache_containers = ['clusters', 'parameter_groups', 'security_groups', 'subnet_groups']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in elasticache_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                elif service == 'vpc':
+                    # VPC resource extraction
+                    vpc_containers = ['vpcs', 'subnets', 'network_acls', 'peering_connections', 'flow_logs']
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in vpc_containers and
+                            len(part) > 2 and not part.isdigit()):
+                            resource_id = part
+                            break
+                            
+                else:
+                    # Generic service resource extraction
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            not part.endswith('s') and 
+                            len(part) > 2 and 
+                            not part.isdigit()):
                             resource_id = part
                             break
                 
-                # If still no resource_id, generate one from the finding
+                # If still no resource_id, generate one from the finding using ScoutSuite patterns
                 if not resource_id:
                     if service == 'iam':
-                        # For IAM, use a more descriptive approach
+                        # For IAM, use a more descriptive approach based on path analysis
                         if 'role' in item_path.lower():
                             resource_id = f"iam_role_{finding_id}"
                         elif 'policy' in item_path.lower():
                             resource_id = f"iam_policy_{finding_id}"
                         elif 'user' in item_path.lower():
                             resource_id = f"iam_user_{finding_id}"
+                        elif 'group' in item_path.lower():
+                            resource_id = f"iam_group_{finding_id}"
+                        elif 'password_policy' in item_path.lower():
+                            resource_id = "iam_password_policy"
+                        elif 'root_account' in item_path.lower():
+                            resource_id = "iam_root_account"
                         else:
                             resource_id = f"iam_{finding_id}"
+                    elif service == 'ec2':
+                        # For EC2, be more specific about resource types
+                        if 'regional_settings' in item_path.lower():
+                            # Extract region from path for regional settings
+                            region_part = region if region else 'global'
+                            resource_id = f"ec2_regional_settings_{region_part}"
+                        elif 'security_group' in item_path.lower():
+                            resource_id = f"ec2_security_group_{finding_id}"
+                        elif 'instance' in item_path.lower():
+                            resource_id = f"ec2_instance_{finding_id}"
+                        elif 'volume' in item_path.lower():
+                            resource_id = f"ec2_volume_{finding_id}"
+                        else:
+                            resource_id = f"ec2_{finding_id}"
+                    elif service == 's3':
+                        # For S3, try to extract bucket name from path
+                        if 'bucket' in item_path.lower():
+                            resource_id = f"s3_bucket_{finding_id}"
+                        else:
+                            resource_id = f"s3_{finding_id}"
+                    elif service == 'cloudtrail':
+                        if 'trail' in item_path.lower():
+                            resource_id = f"cloudtrail_trail_{finding_id}"
+                        elif 'region' in item_path.lower():
+                            region_part = region if region else 'global'
+                            resource_id = f"cloudtrail_region_{region_part}"
+                        else:
+                            resource_id = f"cloudtrail_{finding_id}"
+                    elif service == 'config':
+                        if 'recorder' in item_path.lower():
+                            resource_id = f"config_recorder_{finding_id}"
+                        elif 'rule' in item_path.lower():
+                            resource_id = f"config_rule_{finding_id}"
+                        else:
+                            resource_id = f"config_{finding_id}"
                     else:
+                        # For other services, use service name and finding ID
                         resource_id = f"{service}_{finding_id}"
             
-            # Extract resource type using ScoutSuite's container logic
+            # Extract resource type using ScoutSuite's comprehensive container logic
             resource_type = None
             resource_containers = {
+                # EC2 resources
                 'instances': 'instance',
                 'security_groups': 'security_group',
                 'vpcs': 'vpc',
@@ -399,23 +694,100 @@ class ScoutSuiteParser:
                 'volumes': 'volume',
                 'snapshots': 'snapshot',
                 'images': 'image',
+                'regional_settings': 'configuration',
+                'network_acls': 'network_acl',
+                'peering_connections': 'peering_connection',
+                'flow_logs': 'flow_log',
+                
+                # IAM resources
                 'policies': 'policy',
                 'users': 'user',
                 'roles': 'role',
                 'groups': 'group',
-                'buckets': 'bucket',
-                'keys': 'key',
-                'distributions': 'distribution',
-                'functions': 'function',
-                'clusters': 'cluster',
-                'repositories': 'repository',
-                'identities': 'identity',
+                'credential_reports': 'credential_report',
+                'inline_policies': 'inline_policy',
                 'password_policy': 'configuration',
                 'root_account': 'configuration',
                 'MaxPasswordAge': 'configuration',
                 'MinimumPasswordLength': 'configuration',
                 'PasswordReusePrevention': 'configuration',
-                'NoDefaultEBSEncryption': 'configuration'
+                
+                # S3 resources
+                'buckets': 'bucket',
+                'keys': 'key',
+                'objects': 'object',
+                'acls': 'acl',
+                'public_access_block_configuration': 'configuration',
+                
+                # CloudFront resources
+                'distributions': 'distribution',
+                
+                # Lambda resources
+                'functions': 'function',
+                
+                # RDS resources
+                'parameter_groups': 'parameter_group',
+                'security_groups': 'security_group',
+                'subnet_groups': 'subnet_group',
+                
+                # ElastiCache resources
+                'clusters': 'cluster',
+                
+                # ELB resources
+                'elbs': 'load_balancer',
+                'lbs': 'load_balancer',
+                'elb_policies': 'elb_policy',
+                'listeners': 'listener',
+                
+                # CloudTrail resources
+                'trails': 'trail',
+                'regions': 'region',
+                
+                # CloudWatch resources
+                'alarms': 'alarm',
+                'metric_filters': 'metric_filter',
+                
+                # Config resources
+                'recorders': 'recorder',
+                'rules': 'rule',
+                
+                # KMS resources
+                'keys': 'key',
+                
+                # SNS resources
+                'topics': 'topic',
+                
+                # SQS resources
+                'queues': 'queue',
+                
+                # SES resources
+                'identities': 'identity',
+                
+                # CloudFormation resources
+                'stacks': 'stack',
+                
+                # ACM resources
+                'certificates': 'certificate',
+                
+                # Route53 resources
+                'hosted_zones': 'hosted_zone',
+                'domains': 'domain',
+                
+                # DynamoDB resources
+                'tables': 'table',
+                
+                # Secrets Manager resources
+                'secrets': 'secret',
+                
+                # EMR resources
+                'repositories': 'repository',
+                
+                # Redshift resources
+                
+                # General configuration items
+                'NoDefaultEBSEncryption': 'configuration',
+                'external_attack_surface': 'attack_surface',
+                'permissions': 'permission'
             }
             
             # Find the resource container in the path - prioritize the last container
@@ -424,9 +796,9 @@ class ScoutSuiteParser:
                     resource_type = resource_containers[part]
                     break
             
-            # Fallback to service name if no container found
+            # Fallback resource type inference using ScoutSuite patterns
             if not resource_type:
-                # Try to infer resource type from path or finding
+                # Try to infer resource type from path or finding using ScoutSuite logic
                 if service == 'iam':
                     if any(term in item_path.lower() for term in ['password', 'mfa', 'root']) or any(term in item_path for term in ['MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention']):
                         resource_type = 'configuration'
@@ -434,17 +806,175 @@ class ScoutSuiteParser:
                         resource_type = 'role'
                     elif 'user' in item_path.lower():
                         resource_type = 'user'
+                    elif 'group' in item_path.lower():
+                        resource_type = 'group'
                     elif 'policy' in item_path.lower():
                         resource_type = 'policy'
+                    elif 'credential' in item_path.lower():
+                        resource_type = 'credential_report'
                     else:
                         resource_type = 'iam_resource'
                 elif service == 'ec2':
-                    if any(term in item_path for term in ['NoDefaultEBSEncryption']):
+                    if 'regional_settings' in item_path.lower() or 'NoDefaultEBSEncryption' in item_path:
                         resource_type = 'configuration'
+                    elif 'security_group' in item_path.lower():
+                        resource_type = 'security_group'
+                    elif 'instance' in item_path.lower():
+                        resource_type = 'instance'
+                    elif 'volume' in item_path.lower():
+                        resource_type = 'volume'
+                    elif 'snapshot' in item_path.lower():
+                        resource_type = 'snapshot'
+                    elif 'image' in item_path.lower():
+                        resource_type = 'image'
                     else:
-                        resource_type = service
+                        resource_type = 'ec2_resource'
+                elif service == 's3':
+                    if 'bucket' in item_path.lower():
+                        resource_type = 'bucket'
+                    elif 'key' in item_path.lower() or 'object' in item_path.lower():
+                        resource_type = 'object'
+                    else:
+                        resource_type = 's3_resource'
+                elif service == 'cloudtrail':
+                    if 'trail' in item_path.lower():
+                        resource_type = 'trail'
+                    elif 'region' in item_path.lower():
+                        resource_type = 'region'
+                    else:
+                        resource_type = 'cloudtrail_resource'
+                elif service == 'cloudwatch':
+                    if 'alarm' in item_path.lower():
+                        resource_type = 'alarm'
+                    elif 'metric' in item_path.lower():
+                        resource_type = 'metric_filter'
+                    else:
+                        resource_type = 'cloudwatch_resource'
+                elif service == 'rds':
+                    if 'instance' in item_path.lower():
+                        resource_type = 'instance'
+                    elif 'snapshot' in item_path.lower():
+                        resource_type = 'snapshot'
+                    elif 'parameter_group' in item_path.lower():
+                        resource_type = 'parameter_group'
+                    elif 'security_group' in item_path.lower():
+                        resource_type = 'security_group'
+                    else:
+                        resource_type = 'rds_resource'
+                elif service == 'elb' or service == 'elbv2':
+                    if 'elb' in item_path.lower() or 'load_balancer' in item_path.lower():
+                        resource_type = 'load_balancer'
+                    elif 'listener' in item_path.lower():
+                        resource_type = 'listener'
+                    elif 'policy' in item_path.lower():
+                        resource_type = 'elb_policy'
+                    else:
+                        resource_type = 'elb_resource'
+                elif service == 'awslambda':
+                    if 'function' in item_path.lower():
+                        resource_type = 'function'
+                    else:
+                        resource_type = 'lambda_resource'
+                elif service == 'kms':
+                    if 'key' in item_path.lower():
+                        resource_type = 'key'
+                    else:
+                        resource_type = 'kms_resource'
+                elif service == 'sns':
+                    if 'topic' in item_path.lower():
+                        resource_type = 'topic'
+                    else:
+                        resource_type = 'sns_resource'
+                elif service == 'sqs':
+                    if 'queue' in item_path.lower():
+                        resource_type = 'queue'
+                    else:
+                        resource_type = 'sqs_resource'
+                elif service == 'cloudfront':
+                    if 'distribution' in item_path.lower():
+                        resource_type = 'distribution'
+                    else:
+                        resource_type = 'cloudfront_resource'
+                elif service == 'route53':
+                    if 'hosted_zone' in item_path.lower():
+                        resource_type = 'hosted_zone'
+                    elif 'domain' in item_path.lower():
+                        resource_type = 'domain'
+                    else:
+                        resource_type = 'route53_resource'
+                elif service == 'dynamodb':
+                    if 'table' in item_path.lower():
+                        resource_type = 'table'
+                    else:
+                        resource_type = 'dynamodb_resource'
+                elif service == 'secretsmanager':
+                    if 'secret' in item_path.lower():
+                        resource_type = 'secret'
+                    else:
+                        resource_type = 'secrets_resource'
+                elif service == 'acm':
+                    if 'certificate' in item_path.lower():
+                        resource_type = 'certificate'
+                    else:
+                        resource_type = 'acm_resource'
+                elif service == 'config':
+                    if 'recorder' in item_path.lower():
+                        resource_type = 'recorder'
+                    elif 'rule' in item_path.lower():
+                        resource_type = 'rule'
+                    else:
+                        resource_type = 'config_resource'
+                elif service == 'cloudformation':
+                    if 'stack' in item_path.lower():
+                        resource_type = 'stack'
+                    else:
+                        resource_type = 'cloudformation_resource'
+                elif service == 'ses':
+                    if 'identity' in item_path.lower():
+                        resource_type = 'identity'
+                    else:
+                        resource_type = 'ses_resource'
+                elif service == 'emr':
+                    if 'cluster' in item_path.lower():
+                        resource_type = 'cluster'
+                    else:
+                        resource_type = 'emr_resource'
+                elif service == 'redshift':
+                    if 'cluster' in item_path.lower():
+                        resource_type = 'cluster'
+                    elif 'parameter_group' in item_path.lower():
+                        resource_type = 'parameter_group'
+                    elif 'security_group' in item_path.lower():
+                        resource_type = 'security_group'
+                    else:
+                        resource_type = 'redshift_resource'
+                elif service == 'elasticache':
+                    if 'cluster' in item_path.lower():
+                        resource_type = 'cluster'
+                    elif 'parameter_group' in item_path.lower():
+                        resource_type = 'parameter_group'
+                    elif 'security_group' in item_path.lower():
+                        resource_type = 'security_group'
+                    elif 'subnet_group' in item_path.lower():
+                        resource_type = 'subnet_group'
+                    else:
+                        resource_type = 'elasticache_resource'
+                elif service == 'vpc':
+                    if 'vpc' in item_path.lower() and 'subnet' not in item_path.lower():
+                        resource_type = 'vpc'
+                    elif 'subnet' in item_path.lower():
+                        resource_type = 'subnet'
+                    elif 'network_acl' in item_path.lower():
+                        resource_type = 'network_acl'
+                    elif 'peering' in item_path.lower():
+                        resource_type = 'peering_connection'
+                    elif 'flow_log' in item_path.lower():
+                        resource_type = 'flow_log'
+                    else:
+                        resource_type = 'vpc_resource'
                 else:
-                    resource_type = service
+                    # Generic fallback
+                    resource_type = f"{service}_resource"
             
             # Extract resource details from the actual data
             details = {}
@@ -487,7 +1017,10 @@ class ScoutSuiteParser:
             # Check if this is a configuration finding or needs special handling
             is_config_finding = (resource_id and resource_id.lower() in config_terms) or (service == 'iam' and resource_id in ['MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention'])
             
-            if is_config_finding or (service == 'iam' and any(term in item_path.lower() for term in ['password', 'mfa', 'root'])) or (service == 'ec2' and resource_id in ['NoDefaultEBSEncryption']):
+            # Check for S3 configuration findings
+            s3_config_findings = service == 's3' and resource_id in ['secure_transport_enabled', 'logging', 'mfa_delete', 'versioning']
+            
+            if is_config_finding or (service == 'iam' and any(term in item_path.lower() for term in ['password', 'mfa', 'root'])) or (service == 'ec2' and resource_id in ['NoDefaultEBSEncryption']) or s3_config_findings:
                 if service == 'iam':
                     # IAM configuration findings - use the specific setting name
                     if 'MaxPasswordAge' in item_path:
@@ -517,6 +1050,22 @@ class ScoutSuiteParser:
                         resource_type = 'configuration'
                     else:
                         resource_id = f"{service}_{finding_id}"
+                        resource_name = finding_id.replace('_', ' ').title()
+                        resource_type = 'configuration'
+                elif service == 's3':
+                    # S3 configuration findings - try to extract bucket name from path
+                    bucket_name = None
+                    for part in path_parts:
+                        if part not in ['services', 's3', 'buckets'] and part not in ['secure_transport_enabled', 'logging', 'mfa_delete', 'versioning']:
+                            bucket_name = part
+                            break
+                    
+                    if bucket_name:
+                        resource_id = bucket_name
+                        resource_name = bucket_name
+                        resource_type = 'bucket'
+                    else:
+                        resource_id = f"s3_{finding_id}"
                         resource_name = finding_id.replace('_', ' ').title()
                         resource_type = 'configuration'
                 else:
