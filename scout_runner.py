@@ -21,8 +21,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 class ScoutRunner:
-    def __init__(self, debug=False):
+    def __init__(self, debug=False, initial_scan=False):
         self.debug = debug
+        self.initial_scan = initial_scan
         self.setup_logging()
         self.script_dir = Path(__file__).parent
         self.scoutsuite_dir = self.script_dir / "ScoutSuite"
@@ -429,6 +430,10 @@ class ScoutRunner:
         env['PATH'] = f"{self.venv_dir / 'bin'}:{env.get('PATH', '')}"
         env['VIRTUAL_ENV'] = str(self.venv_dir)
         env['PYTHONPATH'] = str(self.script_dir)
+        
+        # Override INITIAL_SCAN if --initial-scan flag is used
+        if self.initial_scan:
+            env['INITIAL_SCAN'] = 'true'
             
         try:
             print(f"[{profile}] Processing scan results...")
@@ -756,11 +761,12 @@ def main():
     parser.add_argument('--setup', action='store_true', help='Setup ScoutSuite environment')
     parser.add_argument('--healthcheck', action='store_true', help='Check virtual environment dependencies')
     parser.add_argument('--multithread', type=int, default=1, help='Number of concurrent scans (default: 1)')
+    parser.add_argument('--initial-scan', action='store_true', help='Mark new events as notified (prevents mass emails on first scan)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     
     args = parser.parse_args()
     
-    runner = ScoutRunner(debug=args.debug)
+    runner = ScoutRunner(debug=args.debug, initial_scan=args.initial_scan)
     
     if args.setup:
         runner.install_system_deps()
