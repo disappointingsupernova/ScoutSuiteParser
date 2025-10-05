@@ -410,16 +410,28 @@ class ScoutSuiteParser:
                                 break
                             
                 elif service == 's3':
-                    # S3 resource extraction - skip configuration settings
+                    # S3 resource extraction - find bucket name from path structure
                     s3_config_terms = ['secure_transport_enabled', 'logging', 'mfa_delete', 'versioning', 'encryption', 'public_access_block_configuration']
                     s3_containers = ['buckets', 'keys', 'objects', 'acls']
-                    for part in reversed(path_parts):
-                        if (part not in skip_components and 
-                            part not in s3_containers and
-                            part not in s3_config_terms and
-                            len(part) > 2):
-                            resource_id = part
-                            break
+                    
+                    # Look for bucket name that comes after 'buckets' in path
+                    for i, part in enumerate(path_parts):
+                        if i > 0 and path_parts[i-1] == 'buckets':
+                            if (part not in s3_config_terms and 
+                                part not in s3_containers and
+                                len(part) > 2):
+                                resource_id = part
+                                break
+                    
+                    # Fallback to reverse search if not found
+                    if not resource_id:
+                        for part in reversed(path_parts):
+                            if (part not in skip_components and 
+                                part not in s3_containers and
+                                part not in s3_config_terms and
+                                len(part) > 2):
+                                resource_id = part
+                                break
                             
                 elif service == 'ec2':
                     # EC2 resource extraction - handle regional settings and other resources
@@ -1098,12 +1110,23 @@ class ScoutSuiteParser:
                         resource_name = finding_id.replace('_', ' ').title()
                         resource_type = 'configuration'
                 elif service == 's3':
-                    # S3 configuration findings - try to extract bucket name from path
+                    # S3 configuration findings - extract bucket name from path structure
                     bucket_name = None
-                    for part in path_parts:
-                        if part not in ['services', 's3', 'buckets'] and part not in ['secure_transport_enabled', 'logging', 'mfa_delete', 'versioning']:
-                            bucket_name = part
-                            break
+                    
+                    # Look for bucket name that comes after 'buckets' in path
+                    for i, part in enumerate(path_parts):
+                        if i > 0 and path_parts[i-1] == 'buckets':
+                            if part not in ['secure_transport_enabled', 'logging', 'mfa_delete', 'versioning', 'encryption']:
+                                bucket_name = part
+                                break
+                    
+                    # Fallback: look for any part that's not a service/container/config term
+                    if not bucket_name:
+                        for part in path_parts:
+                            if (part not in ['services', 's3', 'buckets', 'secure_transport_enabled', 'logging', 'mfa_delete', 'versioning', 'encryption'] and 
+                                len(part) > 2 and not part.isdigit()):
+                                bucket_name = part
+                                break
                     
                     if bucket_name:
                         resource_id = bucket_name
