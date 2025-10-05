@@ -2,6 +2,80 @@
 
 A comprehensive parser for NCC Group's open-source ScoutSuite security auditing tool, designed to extract individual resource-level security events from ScoutSuite JavaScript results files and store them in a MySQL/MariaDB database with intelligent deduplication and email notification capabilities.
 
+## TL;DR - Quick Start
+
+```bash
+# 1. Setup (first time only)
+python3 scout_runner.py --setup
+pip3 install sqlalchemy pymysql python-dotenv boto3
+mysql -u root -p < setup_database.sql
+cp .env.example .env  # Edit with your DB credentials
+
+# 2. Scan all AWS accounts
+python3 scout_runner.py
+
+# 3. Scan specific account
+python3 scout_runner.py --account production
+```
+
+## Usage
+
+### Automated Scanning with Scout Runner
+```bash
+# Setup ScoutSuite environment (first time only)
+python3 scout_runner.py --setup
+
+# Scan all AWS profiles in ~/.aws/config
+python3 scout_runner.py
+
+# Scan specific AWS profile
+python3 scout_runner.py --account my-profile
+
+# Debug mode
+python3 scout_runner.py --debug
+```
+
+### Manual Parser Operation
+```bash
+# Console output (no database)
+python3 scoutsuite_parser.py results.js
+
+# Database storage with .env configuration
+python3 scoutsuite_parser.py results.js
+
+# Debug mode with detailed logging
+python3 scoutsuite_parser.py results.js --debug
+```
+
+### Scout Runner Command Line Arguments
+```bash
+# Setup ScoutSuite environment
+python3 scout_runner.py --setup
+
+# Scan all AWS profiles
+python3 scout_runner.py
+
+# Scan specific profile
+python3 scout_runner.py --account production
+
+# Debug mode with detailed logging
+python3 scout_runner.py --debug
+
+# Combine options
+python3 scout_runner.py --account staging --debug
+```
+
+### Manual Parser Command Line Arguments
+```bash
+# Override database settings
+python3 scoutsuite_parser.py results.js \
+  --db-host production-db.company.com \
+  --db-user prod_user \
+  --db-password secure_password \
+  --db-name scoutsuite_db \
+  --debug
+```
+
 ## Architecture Overview
 
 ```mermaid
@@ -299,64 +373,6 @@ INITIAL_SCAN=false
 3. **Fallback Behavior**: Missing database config results in JSON console output
 4. **Email Conditional**: Notifications only enabled if `ENABLE_EMAIL_NOTIFICATIONS=true`
 5. **Initial Scan Mode**: When `INITIAL_SCAN=true`, new events are marked as notified to prevent mass emails on first scan
-
-## Usage
-
-### Automated Scanning with Scout Runner
-```bash
-# Setup ScoutSuite environment (first time only)
-python3 scout_runner.py --setup
-
-# Scan all AWS profiles in ~/.aws/config
-python3 scout_runner.py
-
-# Scan specific AWS profile
-python3 scout_runner.py --account my-profile
-
-# Debug mode
-python3 scout_runner.py --debug
-```
-
-### Manual Parser Operation
-```bash
-# Console output (no database)
-python3 scoutsuite_parser.py results.js
-
-# Database storage with .env configuration
-python3 scoutsuite_parser.py results.js
-
-# Debug mode with detailed logging
-python3 scoutsuite_parser.py results.js --debug
-```
-
-### Scout Runner Command Line Arguments
-```bash
-# Setup ScoutSuite environment
-python3 scout_runner.py --setup
-
-# Scan all AWS profiles
-python3 scout_runner.py
-
-# Scan specific profile
-python3 scout_runner.py --account production
-
-# Debug mode with detailed logging
-python3 scout_runner.py --debug
-
-# Combine options
-python3 scout_runner.py --account staging --debug
-```
-
-### Manual Parser Command Line Arguments
-```bash
-# Override database settings
-python3 scoutsuite_parser.py results.js \
-  --db-host production-db.company.com \
-  --db-user prod_user \
-  --db-password secure_password \
-  --db-name scoutsuite_db \
-  --debug
-```
 
 ### Scout Runner Automation
 
