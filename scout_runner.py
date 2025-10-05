@@ -68,11 +68,16 @@ class ScoutRunner:
                 'python3', '-m', 'venv', str(self.venv_dir)
             ], check=True)
             
-        # Install ScoutSuite in venv
+        # Install ScoutSuite and parser dependencies in venv
         self.logger.info("Installing ScoutSuite dependencies...")
         pip_path = self.venv_dir / "bin" / "pip"
         subprocess.run([
             str(pip_path), 'install', '-e', str(self.scoutsuite_dir)
+        ], check=True)
+        
+        self.logger.info("Installing parser dependencies...")
+        subprocess.run([
+            str(pip_path), 'install', 'sqlalchemy', 'pymysql', 'python-dotenv', 'boto3'
         ], check=True)
         
     def get_aws_profiles(self):
@@ -126,9 +131,10 @@ class ScoutRunner:
         results_file = results_files[0]
         self.logger.info(f"Processing results: {results_file}")
         
-        # Run the parser
+        # Run the parser using venv python
         parser_path = self.script_dir / "scoutsuite_parser.py"
-        cmd = ['python3', str(parser_path), str(results_file)]
+        python_path = self.venv_dir / "bin" / "python"
+        cmd = [str(python_path), str(parser_path), str(results_file)]
         
         if self.debug:
             cmd.append('--debug')
