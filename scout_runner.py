@@ -12,6 +12,7 @@ import boto3
 import signal
 import atexit
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from email.mime.text import MIMEText
@@ -35,6 +36,9 @@ class ScoutRunner:
         }
         self.temp_dir = None
         self.results_lock = threading.Lock()  # Thread-safe results tracking
+        self.start_time = None
+        self.end_time = None
+        self.profile_timings = {}  # Track individual profile timings
         self.setup_cleanup_handlers()
         load_dotenv()
         
@@ -446,6 +450,8 @@ class ScoutRunner:
             
     def scan_profile(self, profile):
         """Scan a single profile (thread-safe)"""
+        profile_start_time = time.time()
+        
         # Create thread-specific logger
         thread_logger = self._get_thread_logger(profile)
         
@@ -458,22 +464,47 @@ class ScoutRunner:
         output_dir = temp_base / profile
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        scan_time = 0
+        parse_time = 0
+        
         try:
+            # Time the scan phase
+            scan_start = time.time()
             scan_success, scan_error = self.run_scout_scan(profile, output_dir, thread_logger)
+            scan_time = time.time() - scan_start
+            
             if scan_success:
+                # Time the parse phase
+                parse_start = time.time()
                 parse_success, parse_error = self.process_scan_results(output_dir, profile, thread_logger)
+                parse_time = time.time() - parse_start
+                
                 if parse_success:
                     with self.results_lock:
                         self.scan_results['successful'].append(profile)
-                    return True
+                    success = True
                 else:
                     with self.results_lock:
                         self.scan_results['failed_parse'].append({'profile': profile, 'error': parse_error})
-                    return False
+                    success = False
             else:
                 with self.results_lock:
                     self.scan_results['failed_scan'].append({'profile': profile, 'error': scan_error})
-                return False
+                success = False
+                
+            # Record timing information
+            total_time = time.time() - profile_start_time
+            with self.results_lock:
+                self.profile_timings[profile] = {
+                    'total_time': total_time,
+                    'scan_time': scan_time,
+                    'parse_time': parse_time,
+                    'success': success
+                }
+            
+            thread_logger.info(f"Profile {profile} completed in {total_time:.1f}s (scan: {scan_time:.1f}s, parse: {parse_time:.1f}s)")
+            return success
+            
         finally:
             # Clean up individual profile directory after processing
             if output_dir.exists():
@@ -542,8 +573,14 @@ class ScoutRunner:
             raise  # Re-raise so caller can handle
     
     def generate_summary_report(self, interrupted=False):
-        """Generate detailed summary report"""
+        """Generate detailed summary report with timing information"""
         total = len(self.scan_results['successful']) + len(self.scan_results['failed_scan']) + len(self.scan_results['failed_parse'])
+        
+        # Calculate execution time
+        if self.end_time and self.start_time:
+            total_execution_time = self.end_time - self.start_time
+        else:
+            total_execution_time = time.time() - (self.start_time or time.time())
         
         summary = f"\n{'='*60}\n"
         if interrupted:
@@ -552,6 +589,7 @@ class ScoutRunner:
             summary += f"SCOUTSUITE RUNNER EXECUTION SUMMARY\n"
         summary += f"{'='*60}\n"
         summary += f"Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        summary += f"Total Duration: {total_execution_time:.1f} seconds ({total_execution_time/60:.1f} minutes)\n"
         
         if interrupted and self.scan_results['attempted']:
             summary += f"Attempted Profiles: {len(self.scan_results['attempted'])}\n"
@@ -562,6 +600,28 @@ class ScoutRunner:
         summary += f"Successful: {len(self.scan_results['successful'])}\n"
         summary += f"Failed Scans: {len(self.scan_results['failed_scan'])}\n"
         summary += f"Failed Parsing: {len(self.scan_results['failed_parse'])}\n"
+        
+        # Add performance statistics
+        if self.profile_timings:
+            successful_timings = [t for p, t in self.profile_timings.items() if t['success']]
+            if successful_timings:
+                avg_total = sum(t['total_time'] for t in successful_timings) / len(successful_timings)
+                avg_scan = sum(t['scan_time'] for t in successful_timings) / len(successful_timings)
+                avg_parse = sum(t['parse_time'] for t in successful_timings) / len(successful_timings)
+                max_time = max(t['total_time'] for t in successful_timings)
+                min_time = min(t['total_time'] for t in successful_timings)
+                
+                summary += f"\nPERFORMANCE STATISTICS:\n"
+                summary += f"Average Time per Profile: {avg_total:.1f}s (scan: {avg_scan:.1f}s, parse: {avg_parse:.1f}s)\n"
+                summary += f"Fastest Profile: {min_time:.1f}s\n"
+                summary += f"Slowest Profile: {max_time:.1f}s\n"
+                
+                if total > 1:
+                    theoretical_sequential = sum(t['total_time'] for t in successful_timings)
+                    efficiency = (theoretical_sequential / total_execution_time) * 100 if total_execution_time > 0 else 0
+                    summary += f"Parallelization Efficiency: {efficiency:.1f}%\n"
+                    if efficiency > 100:
+                        summary += f"Time Saved: {theoretical_sequential - total_execution_time:.1f}s\n"
         
         if interrupted and self.scan_results['attempted']:
             summary += f"\nATTEMPTED PROFILES:\n"
@@ -600,6 +660,8 @@ class ScoutRunner:
     
     def scan_all_profiles(self, max_threads=1):
         """Scan all AWS profiles with optional multithreading"""
+        self.start_time = time.time()
+        
         try:
             profiles = self.get_aws_profiles()
             if not profiles:
@@ -614,6 +676,7 @@ class ScoutRunner:
                 self.logger.info(f"Using {max_threads} threads for parallel processing")
                 self._scan_profiles_threaded(profiles, max_threads)
             else:
+                self.logger.info(f"Using single-threaded processing")
                 self._scan_profiles_sequential(profiles)
             
             # Generate and display summary
@@ -643,6 +706,8 @@ class ScoutRunner:
                 f"<html><body><h3>Critical Error</h3><p>{error_msg}</p></body></html>"
             )
         finally:
+            # Record end time
+            self.end_time = time.time()
             # Ensure cleanup happens
             self.cleanup_temp_dir()
     
@@ -724,24 +789,30 @@ def main():
             print("No profiles selected or found. Exiting.")
             return
             
-        if len(profiles_to_scan) == 1:
-            success = runner.scan_profile(profiles_to_scan[0])
-        else:
-            # Scan multiple profiles
-            for profile in profiles_to_scan:
-                runner.logger.info(f"Processing profile {profile}...")
-                # Track that we're attempting this profile
-                if profile not in runner.scan_results['attempted']:
-                    runner.scan_results['attempted'].append(profile)
-                try:
-                    runner.scan_profile(profile)
-                except KeyboardInterrupt:
-                    # Let signal handler deal with it
-                    break
-                except Exception as e:
-                    error_msg = f"Unexpected error processing {profile}: {str(e)}"
-                    runner.logger.error(error_msg)
-                    runner.scan_results['errors'].append(error_msg)
+        # Start timing for single account scans too
+        runner.start_time = time.time()
+        
+        try:
+            if len(profiles_to_scan) == 1:
+                success = runner.scan_profile(profiles_to_scan[0])
+            else:
+                # Scan multiple profiles
+                for profile in profiles_to_scan:
+                    runner.logger.info(f"Processing profile {profile}...")
+                    # Track that we're attempting this profile
+                    if profile not in runner.scan_results['attempted']:
+                        runner.scan_results['attempted'].append(profile)
+                    try:
+                        runner.scan_profile(profile)
+                    except KeyboardInterrupt:
+                        # Let signal handler deal with it
+                        break
+                    except Exception as e:
+                        error_msg = f"Unexpected error processing {profile}: {str(e)}"
+                        runner.logger.error(error_msg)
+                        runner.scan_results['errors'].append(error_msg)
+        finally:
+            runner.end_time = time.time()
                     
         summary = runner.generate_summary_report()
         print(summary)
