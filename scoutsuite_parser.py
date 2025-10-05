@@ -381,16 +381,29 @@ class ScoutSuiteParser:
                 
                 # Service-specific resource extraction using ScoutSuite patterns
                 if service == 'iam':
-                    # IAM resource extraction - skip containers but keep actual resource names
+                    # IAM resource extraction - find the actual IAM resource name
                     iam_containers = ['policies', 'users', 'roles', 'groups', 'password_policy', 'root_account', 'credential_reports', 'inline_policies']
-                    iam_config_terms = ['notconfigured', 'MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention']
-                    for part in reversed(path_parts):
-                        if (part not in skip_components and 
-                            part not in iam_containers and
-                            part not in iam_config_terms and
-                            len(part) > 2 and not part.isdigit()):
-                            resource_id = part
-                            break
+                    iam_config_terms = ['notconfigured', 'MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention', 'assume_role_policy', 'PolicyDocument', 'Statement']
+                    
+                    # Look for the resource name that comes after a container
+                    for i, part in enumerate(path_parts):
+                        if i > 0 and path_parts[i-1] in ['roles', 'users', 'policies', 'groups']:
+                            if (part not in skip_components and 
+                                part not in iam_containers and
+                                part not in iam_config_terms and
+                                len(part) > 2 and not part.isdigit()):
+                                resource_id = part
+                                break
+                    
+                    # Fallback to reverse search if not found
+                    if not resource_id:
+                        for part in reversed(path_parts):
+                            if (part not in skip_components and 
+                                part not in iam_containers and
+                                part not in iam_config_terms and
+                                len(part) > 2 and not part.isdigit()):
+                                resource_id = part
+                                break
                             
                 elif service == 's3':
                     # S3 resource extraction - skip configuration settings
@@ -999,17 +1012,45 @@ class ScoutSuiteParser:
             if not resource_name:
                 resource_name = resource_id
                 
-            # For IAM resources, try to get better names from the resource data
-            if service == 'iam' and isinstance(resource_data, dict):
-                if resource_type == 'role' and 'RoleName' in resource_data:
-                    resource_name = resource_data['RoleName']
-                    resource_id = resource_data['RoleName']  # Use the actual role name as ID too
-                elif resource_type == 'user' and 'UserName' in resource_data:
-                    resource_name = resource_data['UserName']
-                    resource_id = resource_data['UserName']  # Use the actual user name as ID too
-                elif resource_type == 'policy' and 'PolicyName' in resource_data:
-                    resource_name = resource_data['PolicyName']
-                    resource_id = resource_data['PolicyName']  # Use the actual policy name as ID too
+            # For IAM resources, extract the actual resource name from the path and data
+            if service == 'iam':
+                # Try to get the role/user/policy name from the path structure
+                # IAM paths typically look like: services.iam.roles.RoleName.assume_role_policy.PolicyDocument.Statement.0
+                role_name_from_path = None
+                for i, part in enumerate(path_parts):
+                    if i > 0 and path_parts[i-1] in ['roles', 'users', 'policies', 'groups']:
+                        role_name_from_path = part
+                        break
+                
+                # Use the name from path if found, otherwise try resource data
+                if role_name_from_path and role_name_from_path not in ['assume_role_policy', 'inline_policies', 'PolicyDocument', 'Statement']:
+                    resource_id = role_name_from_path
+                    resource_name = role_name_from_path
+                elif isinstance(resource_data, dict):
+                    if resource_type == 'role' and 'RoleName' in resource_data:
+                        resource_name = resource_data['RoleName']
+                        resource_id = resource_data['RoleName']
+                    elif resource_type == 'user' and 'UserName' in resource_data:
+                        resource_name = resource_data['UserName']
+                        resource_id = resource_data['UserName']
+                    elif resource_type == 'policy' and 'PolicyName' in resource_data:
+                        resource_name = resource_data['PolicyName']
+                        resource_id = resource_data['PolicyName']
+                    elif 'name' in resource_data:
+                        resource_name = resource_data['name']
+                        resource_id = resource_data['name']
+                
+                # If we still have generic names, try to extract from the parent path
+                if resource_id in ['Statement', 'PolicyDocument', 'assume_role_policy'] or not resource_id:
+                    # Go up the path to find the actual IAM resource
+                    parent_path_parts = item_path.split('.')
+                    for i in range(len(parent_path_parts) - 1, -1, -1):
+                        if i > 0 and parent_path_parts[i-1] in ['roles', 'users', 'policies', 'groups']:
+                            potential_name = parent_path_parts[i]
+                            if potential_name not in ['assume_role_policy', 'inline_policies', 'PolicyDocument', 'Statement']:
+                                resource_id = potential_name
+                                resource_name = potential_name
+                                break
             
             # Handle configuration findings and IAM policy settings
             config_terms = ['notconfigured', 'false', 'true', 'maxpasswordage', 'minimumpasswordlength', 'expirepasswords', 'passwordreuseprevention', 'mfa_active', 'mfa_active_hardware', 'password_policy']
