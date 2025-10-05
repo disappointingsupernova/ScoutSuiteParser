@@ -393,13 +393,22 @@ class ScoutRunner:
         
         try:
             print(f"[{profile}] Scanning AWS account...")
-            # Capture stderr to get actual error messages
-            result = subprocess.run(cmd, check=True, stderr=subprocess.PIPE, text=True)
+            # Show output in real-time but capture stderr for errors
+            result = subprocess.run(cmd, check=True, stderr=subprocess.STDOUT)
             logger.info(f"Scan completed for profile: {profile}")
             return True, None
         except subprocess.CalledProcessError as e:
-            error_detail = e.stderr.strip() if e.stderr else "ScoutSuite scan failed"
-            error_msg = f"Exit code {e.returncode}: {error_detail}"
+            # Run again to capture stderr for error reporting
+            try:
+                subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=True)
+            except subprocess.CalledProcessError as e2:
+                error_detail = e2.stderr.strip() if e2.stderr else "ScoutSuite scan failed"
+                error_msg = f"Exit code {e.returncode}: {error_detail}"
+                logger.error(f"Scan failed for profile {profile}: {error_msg}")
+                return False, error_msg
+            
+            # Fallback if second run somehow succeeds
+            error_msg = f"Exit code {e.returncode}: ScoutSuite scan failed"
             logger.error(f"Scan failed for profile {profile}: {error_msg}")
             return False, error_msg
             
