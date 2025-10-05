@@ -354,16 +354,40 @@ class ScoutSuiteParser:
             
             # For IAM and other services, use the last meaningful component
             if not resource_id:
-                # Skip generic path components
-                skip_components = {'services', 'regions', 'id', 'vpcs', 'subnets', 'instances', 'security_groups', 'policies', 'users', 'roles', 'groups'}
-                for part in reversed(path_parts):
-                    if part not in skip_components and not part.endswith('s'):
-                        resource_id = part
-                        break
+                # Skip generic path components but keep meaningful ones
+                skip_components = {'services', 'regions', 'id', 'vpcs', 'subnets', 'instances', 'security_groups'}
                 
-                # If still no resource_id, use the last component
-                if not resource_id and path_parts:
-                    resource_id = path_parts[-1]
+                # For IAM, look for actual resource identifiers
+                if service == 'iam':
+                    # Look for actual IAM resource names/IDs (not containers)
+                    for part in reversed(path_parts):
+                        if (part not in skip_components and 
+                            part not in ['policies', 'users', 'roles', 'groups', 'password_policy', 'root_account'] and
+                            part not in ['notconfigured', 'secure_transport_enabled', 'logging', 'mfa_delete'] and
+                            len(part) > 2):  # Avoid single chars or very short meaningless parts
+                            resource_id = part
+                            break
+                else:
+                    # For non-IAM services
+                    for part in reversed(path_parts):
+                        if part not in skip_components and not part.endswith('s') and len(part) > 2:
+                            resource_id = part
+                            break
+                
+                # If still no resource_id, generate one from the finding
+                if not resource_id:
+                    if service == 'iam':
+                        # For IAM, use a more descriptive approach
+                        if 'role' in item_path.lower():
+                            resource_id = f"iam_role_{finding_id}"
+                        elif 'policy' in item_path.lower():
+                            resource_id = f"iam_policy_{finding_id}"
+                        elif 'user' in item_path.lower():
+                            resource_id = f"iam_user_{finding_id}"
+                        else:
+                            resource_id = f"iam_{finding_id}"
+                    else:
+                        resource_id = f"{service}_{finding_id}"
             
             # Extract resource type using ScoutSuite's container logic
             resource_type = None
@@ -385,7 +409,12 @@ class ScoutSuiteParser:
                 'functions': 'function',
                 'clusters': 'cluster',
                 'repositories': 'repository',
-                'identities': 'identity'
+                'identities': 'identity',
+                'password_policy': 'configuration',
+                'root_account': 'configuration',
+                'MaxPasswordAge': 'configuration',
+                'MinimumPasswordLength': 'configuration',
+                'PasswordReusePrevention': 'configuration'
             }
             
             # Find the resource container in the path - prioritize the last container
@@ -396,7 +425,20 @@ class ScoutSuiteParser:
             
             # Fallback to service name if no container found
             if not resource_type:
-                resource_type = service
+                # For IAM, try to infer from path or finding
+                if service == 'iam':
+                    if any(term in item_path.lower() for term in ['password', 'mfa', 'root']) or any(term in item_path for term in ['MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention']):
+                        resource_type = 'configuration'
+                    elif 'role' in item_path.lower():
+                        resource_type = 'role'
+                    elif 'user' in item_path.lower():
+                        resource_type = 'user'
+                    elif 'policy' in item_path.lower():
+                        resource_type = 'policy'
+                    else:
+                        resource_type = 'iam_resource'
+                else:
+                    resource_type = service
             
             # Extract resource details from the actual data
             details = {}
@@ -404,12 +446,15 @@ class ScoutSuiteParser:
                 # Get resource name from data
                 resource_name = (resource_data.get('name') or 
                                resource_data.get('Name') or 
+                               resource_data.get('RoleName') or
+                               resource_data.get('UserName') or
+                               resource_data.get('PolicyName') or
                                resource_data.get('id') or 
                                resource_data.get('arn') or 
                                resource_id)
                 
                 # Store key details
-                detail_keys = ['name', 'Name', 'id', 'arn', 'state', 'status', 'region', 'availability_zone']
+                detail_keys = ['name', 'Name', 'RoleName', 'UserName', 'PolicyName', 'id', 'arn', 'state', 'status', 'region', 'availability_zone']
                 for key in detail_keys:
                     if key in resource_data:
                         details[key] = resource_data[key]
@@ -417,12 +462,65 @@ class ScoutSuiteParser:
             # Use resource_id as name if no name found
             if not resource_name:
                 resource_name = resource_id
+                
+            # For IAM resources, try to get better names from the resource data
+            if service == 'iam' and isinstance(resource_data, dict):
+                if resource_type == 'role' and 'RoleName' in resource_data:
+                    resource_name = resource_data['RoleName']
+                    resource_id = resource_data['RoleName']  # Use the actual role name as ID too
+                elif resource_type == 'user' and 'UserName' in resource_data:
+                    resource_name = resource_data['UserName']
+                    resource_id = resource_data['UserName']  # Use the actual user name as ID too
+                elif resource_type == 'policy' and 'PolicyName' in resource_data:
+                    resource_name = resource_data['PolicyName']
+                    resource_id = resource_data['PolicyName']  # Use the actual policy name as ID too
             
-            # Handle configuration findings (no specific resource)
-            if not resource_id or resource_id in ['notconfigured', 'false', 'true']:
-                resource_id = f"{service}_{finding_id}"
-                resource_name = finding_id.replace('_', ' ').title()
-                resource_type = 'configuration'
+            # Handle configuration findings and IAM policy settings
+            config_terms = ['notconfigured', 'false', 'true', 'maxpasswordage', 'minimumpasswordlength', 'expirepasswords', 'passwordreuseprevention', 'mfa_active', 'mfa_active_hardware', 'password_policy']
+            
+            # Check if this is a configuration finding or needs special handling
+            is_config_finding = (resource_id and resource_id.lower() in config_terms) or (service == 'iam' and resource_id in ['MaxPasswordAge', 'MinimumPasswordLength', 'PasswordReusePrevention'])
+            
+            if is_config_finding or (service == 'iam' and any(term in item_path.lower() for term in ['password', 'mfa', 'root'])):
+                if service == 'iam':
+                    # IAM configuration findings - use the specific setting name
+                    if 'MaxPasswordAge' in item_path:
+                        resource_id = 'MaxPasswordAge'
+                        resource_name = 'Password Age Policy'
+                    elif 'MinimumPasswordLength' in item_path:
+                        resource_id = 'MinimumPasswordLength'
+                        resource_name = 'Password Length Policy'
+                    elif 'PasswordReusePrevention' in item_path:
+                        resource_id = 'PasswordReusePrevention'
+                        resource_name = 'Password Reuse Policy'
+                    elif 'password_policy' in item_path:
+                        resource_id = 'password_policy'
+                        resource_name = 'Password Policy'
+                    elif 'root_account' in item_path or 'mfa_active' in item_path:
+                        resource_id = 'root_account'
+                        resource_name = 'Root Account'
+                    else:
+                        resource_id = f"iam_{finding_id}"
+                        resource_name = finding_id.replace('_', ' ').title()
+                    resource_type = 'configuration'
+                else:
+                    resource_id = f"{service}_{finding_id}"
+                    resource_name = finding_id.replace('_', ' ').title()
+                    resource_type = 'configuration'
+            
+            # If we still don't have a proper resource_name, generate one
+            if not resource_name or resource_name == resource_id:
+                if service == 'iam':
+                    if resource_type == 'role':
+                        resource_name = f"IAM Role ({resource_id})"
+                    elif resource_type == 'policy':
+                        resource_name = f"IAM Policy ({resource_id})"
+                    elif resource_type == 'user':
+                        resource_name = f"IAM User ({resource_id})"
+                    else:
+                        resource_name = resource_id
+                else:
+                    resource_name = resource_id
             
             # Create event hash for deduplication
             event_data = f"{service}:{finding_id}:{resource_id}:{item_path}"
