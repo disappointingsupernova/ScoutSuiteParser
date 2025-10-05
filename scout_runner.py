@@ -108,11 +108,11 @@ class ScoutRunner:
         ]
         
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True)
             self.logger.info(f"Scan completed for profile: {profile}")
             return True
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"Scan failed for profile {profile}: {e.stderr}")
+            self.logger.error(f"Scan failed for profile {profile}: {e}")
             return False
             
     def process_scan_results(self, output_dir, profile):
