@@ -55,8 +55,11 @@ python3 scout_runner.py --setup
 # Scan all AWS profiles
 python3 scout_runner.py
 
-# Scan specific profile
+# Scan specific profile by name
 python3 scout_runner.py --account production
+
+# Scan by AWS account ID (searches profiles containing this ID)
+python3 scout_runner.py --account 123456789012
 
 # Debug mode with detailed logging
 python3 scout_runner.py --debug
@@ -383,8 +386,13 @@ The `scout_runner.py` script provides complete automation for ScoutSuite scannin
 - **Multi-Platform Support**: Handles system dependencies for Ubuntu/Debian and RHEL/CentOS
 - **AWS Integration**: Reads all profiles from `~/.aws/config` for comprehensive scanning
 - **Selective Scanning**: Target specific accounts with `--account` parameter
+- **Smart Account Resolution**: Matches account IDs to profile names with interactive selection
+- **Comprehensive Tracking**: Detailed success/failure tracking with exit code monitoring
+- **Email Notifications**: Automatic failure alerts when issues occur
+- **Execution Summaries**: Detailed reports of scan results and failures
 - **Automated Processing**: Seamlessly processes scan results through the parser
-- **Cleanup Management**: Uses temporary directories with automatic cleanup
+- **Cleanup Management**: Centralized temporary directory management with signal handling
+- **Graceful Interruption**: Ctrl+C handling with summary reports and cleanup
 
 #### Setup Process
 1. **System Dependencies**: Installs python3-pip, python3-venv, python3-dev, git
@@ -394,17 +402,88 @@ The `scout_runner.py` script provides complete automation for ScoutSuite scannin
 
 #### Scanning Workflow
 1. **Profile Discovery**: Reads AWS profiles from `~/.aws/config`
-2. **Temporary Directory**: Creates unique temp directory for each scan
+2. **Centralized Temp Directory**: Creates main temp directory with subdirectories per profile
 3. **ScoutSuite Execution**: Runs ScoutSuite with appropriate profile
 4. **Result Processing**: Automatically processes JS results through parser
 5. **Database Storage**: Saves findings and events to database
-6. **Cleanup**: Removes temporary files after processing
+6. **Progressive Cleanup**: Removes individual profile directories after processing
+7. **Final Cleanup**: Removes main temp directory on completion or interruption
+
+#### Smart Account Resolution
+The runner provides intelligent account parameter resolution:
+
+1. **Direct Profile Match**: If `--account` matches an existing profile name, uses it directly
+2. **Account ID Search**: If no direct match, searches all profiles for the account ID
+3. **Interactive Selection**: When multiple profiles match an account ID, presents selection menu:
+   ```
+   Found 3 profiles matching account ID '123456789012':
+     1. production-east
+     2. production-west
+     3. production-backup
+     4. All profiles
+     5. Cancel
+   Select profiles to scan (comma-separated numbers or single number): 1,2
+   ```
+4. **Multiple Selection**: Supports selecting multiple profiles or all matching profiles
+
+#### Comprehensive Tracking and Reporting
+The runner tracks detailed execution metrics:
+
+- **Success Tracking**: Records all successfully processed profiles
+- **Failure Classification**: Separates scan failures from parsing failures
+- **Exit Code Monitoring**: Captures and reports subprocess exit codes and error messages
+- **Error Aggregation**: Collects all errors for comprehensive reporting
+- **Execution Summary**: Generates detailed reports with visual indicators:
+  ```
+  ============================================================
+  SCOUTSUITE RUNNER EXECUTION SUMMARY
+  ============================================================
+  Execution Time: 2024-01-15 14:30:25
+  Total Profiles: 5
+  Successful: 3
+  Failed Scans: 1
+  Failed Parsing: 1
+  
+  SUCCESSFUL PROFILES:
+    ✓ production-east
+    ✓ production-west
+    ✓ staging
+  
+  FAILED SCANS:
+    ✗ production-backup: Exit code 1: Invalid credentials
+  
+  FAILED PARSING:
+    ✗ development: Exit code 2: No results file found
+  ============================================================
+  ```
+
+#### Email Notification System
+Automatic failure notifications when issues occur:
+
+- **Conditional Notifications**: Only sends emails when `ENABLE_EMAIL_NOTIFICATIONS=true`
+- **Failure Detection**: Triggers on scan failures, parsing failures, or critical errors
+- **Rich HTML Reports**: Sends formatted execution summaries via email
+- **Dual Delivery**: Supports both SMTP and AWS SES
+- **Multiple Recipients**: Configurable recipient list via `EMAIL_RECIPIENTS`
+- **Non-blocking**: Email failures don't affect scan processing
 
 #### Error Handling
 - **Individual Scan Failures**: Continues processing other profiles if one fails
+- **Exit Code Capture**: Records specific error messages and exit codes from ScoutSuite
 - **Missing Dependencies**: Automatically installs required system packages
 - **AWS Profile Issues**: Logs errors but continues with remaining profiles
 - **Processing Failures**: Reports failures but doesn't stop batch processing
+- **Critical Error Handling**: Sends emergency notifications for system-level failures
+- **Graceful Interruption**: Handles Ctrl+C with summary generation and cleanup
+- **Signal Management**: Proper cleanup on SIGINT and SIGTERM signals
+
+#### Cleanup and Resource Management
+- **Centralized Temp Directory**: Single main directory `/tmp/scoutsuite_runner_XXXXXX/`
+- **Profile Subdirectories**: Each account scan uses `/tmp/scoutsuite_runner_XXXXXX/profile-name/`
+- **Progressive Cleanup**: Individual profile directories removed after processing
+- **Signal Handlers**: Ctrl+C triggers cleanup and summary generation
+- **Automatic Cleanup**: `atexit` handlers ensure cleanup even on unexpected termination
+- **Robust Error Handling**: Cleanup continues even if individual operations fail
 
 ### Logging Levels
 - **INFO**: Standard operational messages (scan progress, database operations)
@@ -539,7 +618,7 @@ ORDER BY date;
 
 ## Email Notification System
 
-### Notification Logic Flow
+### Parser Notifications (New Security Events)
 ```mermaid
 flowchart TD
     A[New Events Detected] --> B{Email Config Enabled?}
@@ -557,17 +636,45 @@ flowchart TD
     K --> L[Commit Database Transaction]
 ```
 
+### Runner Notifications (Execution Failures)
+```mermaid
+flowchart TD
+    A[Scan Execution Complete] --> B{Any Failures?}
+    B -->|No| C[No Notification]
+    B -->|Yes| D{Email Config Enabled?}
+    D -->|No| E[Log Only]
+    D -->|Yes| F[Generate Summary Report]
+    F --> G[Convert to HTML Format]
+    G --> H{AWS SES Available?}
+    H -->|Yes| I[Send via AWS SES]
+    H -->|No| J[Send via SMTP]
+    I --> K[Log Notification Sent]
+    J --> K
+```
+
 ### Email Content Structure
+
+#### Parser Notifications (Security Events)
 - **Header**: Account ID, scan timestamp, ScoutSuite version
 - **Severity Sections**: Events grouped by critical, high, medium, low
 - **Resource Details**: Resource ID, name, type, region for each event
 - **Finding Context**: ScoutSuite finding ID, service, and description
 - **HTML Formatting**: Rich formatting for improved readability
 
+#### Runner Notifications (Execution Failures)
+- **Subject**: "ScoutSuite Runner Failures - YYYY-MM-DD HH:MM"
+- **Execution Summary**: Complete execution report with timestamps
+- **Success/Failure Counts**: Statistical overview of scan results
+- **Detailed Error Messages**: Specific failure reasons with exit codes
+- **Profile Lists**: Visual indicators (✓/✗) for each profile processed
+- **HTML Formatting**: Monospace formatting preserving report structure
+
 ### Delivery Methods
 1. **SMTP**: Traditional email server connectivity with TLS support
 2. **AWS SES**: Managed email service with boto3 integration
 3. **Automatic Selection**: SES preferred if AWS credentials available
+4. **Failure Tolerance**: Email delivery failures don't stop scan processing
+5. **Configuration Validation**: Checks for required email settings before attempting delivery
 
 ## Error Handling and Fallback
 
@@ -604,6 +711,36 @@ flowchart TD
 - **Hash-based Deduplication**: Cryptographic event identification
 - **Configurable Retention**: Resolved events can be archived/purged
 
+### Temporary Directory Management
+The runner uses a centralized approach to temporary file management:
+
+```bash
+# Temporary directory structure
+/tmp/scoutsuite_runner_abc123/
+├── profile1/
+│   └── scoutsuite-results/
+│       └── scoutsuite_results_aws-profile1.js
+├── profile2/
+│   └── scoutsuite-results/
+│       └── scoutsuite_results_aws-profile2.js
+└── (cleaned up progressively)
+```
+
+**Cleanup Behavior:**
+- **Normal Completion**: All temp files removed automatically
+- **Ctrl+C Interruption**: Signal handler cleans up before exit
+- **Script Crash**: `atexit` handler ensures cleanup
+- **Individual Failures**: Profile directories still cleaned up
+
+**Manual Cleanup** (if needed):
+```bash
+# Find any leftover temp directories
+find /tmp -name "scoutsuite_runner_*" -type d
+
+# Remove manually if needed
+rm -rf /tmp/scoutsuite_runner_*
+```
+
 ## Troubleshooting
 
 ### Common Issues
@@ -639,19 +776,77 @@ WHERE table_schema = 'scoutsuite_db';
 
 ### Debug Mode
 Enable detailed logging with `--debug` flag:
+
+#### Parser Debug Output
 - Individual resource extraction details
 - SQL query execution information
 - Full error stack traces
 - JSON output of parsed data
 
+#### Runner Debug Output
+- ScoutSuite command execution details
+- Subprocess output capture (stdout/stderr)
+- Profile resolution logic
+- Email notification attempts
+- Temporary directory management
+
 ### Log Analysis
 ```bash
-# Monitor processing in real-time
+# Monitor parser processing in real-time
 python3 scoutsuite_parser.py results.js --debug | tee parser.log
+
+# Monitor runner execution in real-time
+python3 scout_runner.py --debug | tee runner.log
 
 # Extract timing information
 grep "Processing finding" parser.log
+grep "Processing profile" runner.log
 
 # Check for errors
-grep "ERROR" parser.log
+grep "ERROR" parser.log runner.log
+
+# View execution summaries (including interrupted runs)
+grep "EXECUTION SUMMARY" runner.log -A 20
+grep "INTERRUPTED EXECUTION SUMMARY" runner.log -A 20
+
+# Check email notification status
+grep "notification sent" runner.log
+
+# Monitor cleanup operations
+grep "Cleaned up" runner.log
+grep "temporary directory" runner.log
 ```
+
+### Interruption Handling
+The runner gracefully handles interruptions (Ctrl+C):
+
+```bash
+# Start a scan
+python3 scout_runner.py --account production
+
+# Press Ctrl+C during execution
+^C
+Received interrupt signal. Generating summary...
+
+============================================================
+INTERRUPTED EXECUTION SUMMARY
+============================================================
+Execution Time: 2024-01-15 14:30:25
+Total Profiles: 2
+Successful: 1
+Failed Scans: 0
+Failed Parsing: 0
+
+SUCCESSFUL PROFILES:
+  ✓ production-east
+============================================================
+
+Cleaning up temporary files...
+Cleanup complete. Exiting.
+```
+
+**Interruption Features:**
+- **Summary Generation**: Shows progress made before interruption
+- **Email Notifications**: Sends failure alerts if any issues occurred
+- **Complete Cleanup**: Removes all temporary files and directories
+- **Graceful Exit**: Proper signal handling prevents data corruption
