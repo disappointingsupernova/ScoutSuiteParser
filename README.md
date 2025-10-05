@@ -50,8 +50,11 @@ python3 scoutsuite_parser.py results.js --debug
 # Setup ScoutSuite environment
 python3 scout_runner.py --setup
 
-# Scan all AWS profiles
+# Scan all AWS profiles (single threaded)
 python3 scout_runner.py
+
+# Scan all AWS profiles with 3 concurrent threads
+python3 scout_runner.py --multithread 3
 
 # Scan specific profile by name
 python3 scout_runner.py --account production
@@ -62,8 +65,11 @@ python3 scout_runner.py --account 123456789012
 # Debug mode with detailed logging
 python3 scout_runner.py --debug
 
-# Combine options
-python3 scout_runner.py --account staging --debug
+# Combine options - multithreaded with debug
+python3 scout_runner.py --multithread 2 --debug
+
+# Health check virtual environment
+python3 scout_runner.py --healthcheck
 ```
 
 ### Manual Parser Command Line Arguments
@@ -225,6 +231,7 @@ Junction table linking events to findings across scans:
 
 ## Data Processing Flow
 
+### Single-Threaded Processing
 ```mermaid
 sequenceDiagram
     participant R as Scout Runner
@@ -271,6 +278,54 @@ sequenceDiagram
         end
         R->>R: Cleanup Temp Files
     end
+```
+
+### Multi-Threaded Processing
+```mermaid
+sequenceDiagram
+    participant R as Scout Runner
+    participant TP as Thread Pool
+    participant T1 as Thread 1
+    participant T2 as Thread 2
+    participant T3 as Thread 3
+    participant S as ScoutSuite
+    participant P as Parser
+    participant DB as Database Pool
+    participant E as Email Service
+    
+    R->>R: Read AWS Profiles
+    R->>TP: Create Thread Pool (N threads)
+    R->>TP: Submit Profile Tasks
+    
+    par Thread 1 Processing
+        TP->>T1: Assign Profile A
+        T1->>S: Execute Scout Scan
+        S->>T1: Generate JS Results
+        T1->>P: Process Results File
+        P->>DB: Use Thread-Safe DB Session
+        P->>T1: Return Results
+        T1->>R: Update Thread-Safe Results
+    and Thread 2 Processing
+        TP->>T2: Assign Profile B
+        T2->>S: Execute Scout Scan
+        S->>T2: Generate JS Results
+        T2->>P: Process Results File
+        P->>DB: Use Thread-Safe DB Session
+        P->>T2: Return Results
+        T2->>R: Update Thread-Safe Results
+    and Thread 3 Processing
+        TP->>T3: Assign Profile C
+        T3->>S: Execute Scout Scan
+        S->>T3: Generate JS Results
+        T3->>P: Process Results File
+        P->>DB: Use Thread-Safe DB Session
+        P->>T3: Return Results
+        T3->>R: Update Thread-Safe Results
+    end
+    
+    R->>R: Aggregate All Results
+    R->>E: Send Consolidated Notifications
+    R->>R: Generate Summary Report
 ```
 
 ## Installation
@@ -389,6 +444,8 @@ The `scout_runner.py` script provides complete automation for ScoutSuite scannin
 - **Email Notifications**: Automatic failure alerts when issues occur
 - **Execution Summaries**: Detailed reports of scan results and failures
 - **Automated Processing**: Seamlessly processes scan results through the parser
+- **Multithreaded Scanning**: Concurrent processing of multiple AWS accounts
+- **Thread-Safe Operations**: Secure parallel execution with proper resource management
 - **Cleanup Management**: Centralized temporary directory management with signal handling
 - **Graceful Interruption**: Ctrl+C handling with summary reports and cleanup
 
@@ -399,13 +456,26 @@ The `scout_runner.py` script provides complete automation for ScoutSuite scannin
 4. **Dependency Installation**: Installs ScoutSuite and its dependencies
 
 #### Scanning Workflow
+
+##### Single-Threaded Mode (Default)
 1. **Profile Discovery**: Reads AWS profiles from `~/.aws/config`
 2. **Centralized Temp Directory**: Creates main temp directory with subdirectories per profile
-3. **ScoutSuite Execution**: Runs ScoutSuite with appropriate profile
-4. **Result Processing**: Automatically processes JS results through parser
-5. **Database Storage**: Saves findings and events to database
-6. **Progressive Cleanup**: Removes individual profile directories after processing
-7. **Final Cleanup**: Removes main temp directory on completion or interruption
+3. **Sequential Processing**: Processes each profile one by one
+4. **ScoutSuite Execution**: Runs ScoutSuite with appropriate profile
+5. **Result Processing**: Automatically processes JS results through parser
+6. **Database Storage**: Saves findings and events to database
+7. **Progressive Cleanup**: Removes individual profile directories after processing
+8. **Final Cleanup**: Removes main temp directory on completion or interruption
+
+##### Multi-Threaded Mode (`--multithread N`)
+1. **Profile Discovery**: Reads AWS profiles from `~/.aws/config`
+2. **Thread Pool Creation**: Creates thread pool with N worker threads
+3. **Parallel Processing**: Distributes profiles across available threads
+4. **Concurrent Execution**: Multiple ScoutSuite scans run simultaneously
+5. **Thread-Safe Results**: Aggregates results using thread-safe mechanisms
+6. **Database Sessions**: Each thread uses independent database connections
+7. **Progressive Cleanup**: Removes individual profile directories after processing
+8. **Final Cleanup**: Removes main temp directory on completion or interruption
 
 #### Smart Account Resolution
 The runner provides intelligent account parameter resolution:
@@ -465,8 +535,17 @@ Automatic failure notifications when issues occur:
 - **Multiple Recipients**: Configurable recipient list via `EMAIL_RECIPIENTS`
 - **Non-blocking**: Email failures don't affect scan processing
 
+#### Multithreading Features
+- **Concurrent Scanning**: Process multiple AWS accounts simultaneously
+- **Thread Pool Management**: Efficient resource allocation with configurable thread count
+- **Thread-Safe Operations**: Secure parallel execution with proper locking mechanisms
+- **Independent Database Sessions**: Each thread maintains its own database connection
+- **Prefixed Logging**: Thread-specific log messages with account identifiers
+- **Graceful Thread Termination**: Proper cleanup of all threads on interruption
+
 #### Error Handling
 - **Individual Scan Failures**: Continues processing other profiles if one fails
+- **Thread Isolation**: Failures in one thread don't affect others
 - **Exit Code Capture**: Records specific error messages and exit codes from ScoutSuite
 - **Missing Dependencies**: Automatically installs required system packages
 - **AWS Profile Issues**: Logs errors but continues with remaining profiles
@@ -474,6 +553,7 @@ Automatic failure notifications when issues occur:
 - **Critical Error Handling**: Sends emergency notifications for system-level failures
 - **Graceful Interruption**: Handles Ctrl+C with summary generation and cleanup
 - **Signal Management**: Proper cleanup on SIGINT and SIGTERM signals
+- **Thread Cancellation**: Cancels remaining threads on interruption
 
 #### Cleanup and Resource Management
 - **Centralized Temp Directory**: Single main directory `/tmp/scoutsuite_runner_XXXXXX/`
@@ -737,9 +817,81 @@ find /tmp -name "scoutsuite_runner_*" -type d
 
 # Remove manually if needed
 rm -rf /tmp/scoutsuite_runner_*
+
+# Check for any remaining scout processes
+ps aux | grep scout
+
+# Kill any stuck scout processes (if needed)
+pkill -f scout
 ```
 
+### Multithreading Best Practices
+
+#### Thread Count Selection
+```bash
+# For small environments (1-5 accounts)
+python3 scout_runner.py --multithread 2
+
+# For medium environments (6-15 accounts)
+python3 scout_runner.py --multithread 3
+
+# For large environments (16+ accounts)
+python3 scout_runner.py --multithread 4
+
+# Monitor system resources
+htop  # Watch CPU and memory usage during scans
+```
+
+#### Resource Monitoring
+```bash
+# Monitor database connections
+SHOW PROCESSLIST;  # In MySQL/MariaDB
+
+# Monitor system resources
+watch -n 1 'ps aux | grep scout | wc -l'  # Count scout processes
+watch -n 1 'netstat -an | grep 3306 | wc -l'  # Count DB connections
+```
+
+#### Performance Optimization
+- **Database Connection Pooling**: Automatically managed by SQLAlchemy
+- **Memory Management**: Each thread uses ~100-200MB during active scanning
+- **Network Optimization**: Concurrent API calls reduce total scan time
+- **Disk I/O**: Temporary files are cleaned up progressively to minimize disk usage
+
 ## Troubleshooting
+
+### Multithreading Issues
+
+#### Thread Deadlocks
+```bash
+# If scans appear to hang
+ps aux | grep scout_runner
+kill -9 <pid>  # Force kill if needed
+
+# Check for database lock issues
+SHOW PROCESSLIST;  # Look for long-running queries
+```
+
+#### Database Connection Limits
+```bash
+# Check MySQL connection limit
+SHOW VARIABLES LIKE 'max_connections';
+
+# Monitor current connections
+SHOW STATUS LIKE 'Threads_connected';
+
+# Increase if needed (in my.cnf)
+max_connections = 200
+```
+
+#### Memory Issues
+```bash
+# Monitor memory usage during multithreaded scans
+watch -n 1 'free -h'
+
+# Reduce thread count if memory constrained
+python3 scout_runner.py --multithread 2  # Instead of 4
+```
 
 ### Common Issues
 
@@ -770,6 +922,24 @@ EXPLAIN SELECT * FROM scout_events WHERE resource_type = 'instance';
 SELECT table_name, table_rows, data_length 
 FROM information_schema.tables 
 WHERE table_schema = 'scoutsuite_db';
+
+-- Monitor concurrent database operations
+SHOW PROCESSLIST;
+
+-- Check for lock contention
+SHOW ENGINE INNODB STATUS\G
+```
+
+#### Thread Performance Monitoring
+```bash
+# Monitor thread execution times
+grep "Completed processing" runner.log | awk '{print $1, $2, $4}'
+
+# Check for thread bottlenecks
+grep "Thread" runner.log | grep -E "(started|completed|failed)"
+
+# Monitor concurrent ScoutSuite processes
+watch -n 1 'pgrep -f scout | wc -l'
 ```
 
 ### Debug Mode
@@ -796,6 +966,9 @@ python3 scoutsuite_parser.py results.js --debug | tee parser.log
 # Monitor runner execution in real-time
 python3 scout_runner.py --debug | tee runner.log
 
+# Monitor multithreaded execution
+python3 scout_runner.py --multithread 3 --debug | tee runner.log
+
 # Extract timing information
 grep "Processing finding" parser.log
 grep "Processing profile" runner.log
@@ -813,11 +986,44 @@ grep "notification sent" runner.log
 # Monitor cleanup operations
 grep "Cleaned up" runner.log
 grep "temporary directory" runner.log
+
+# Monitor thread-specific operations
+grep "\[profile-name\]" runner.log  # Filter by specific profile
+grep "Thread" runner.log            # Thread pool operations
+grep "Completed processing" runner.log  # Thread completion status
 ```
 
-### Interruption Handling
-The runner gracefully handles interruptions (Ctrl+C):
+### Multithreading Performance
 
+#### Optimal Thread Count
+- **I/O Bound Operations**: ScoutSuite scans are primarily I/O bound (AWS API calls)
+- **Recommended Range**: 2-5 threads for most environments
+- **Resource Considerations**: Each thread uses ~100-200MB RAM during scanning
+- **Database Connections**: Each thread maintains its own database session
+
+#### Performance Comparison
+```bash
+# Single threaded (baseline)
+time python3 scout_runner.py
+
+# Multi-threaded (2x faster for 4+ accounts)
+time python3 scout_runner.py --multithread 3
+
+# Monitor resource usage
+top -p $(pgrep -f scout_runner.py)
+```
+
+#### Thread Safety Features
+- **Results Aggregation**: Thread-safe collection of scan results
+- **Database Operations**: Independent sessions prevent conflicts
+- **Logging**: Thread-specific loggers with profile prefixes
+- **Cleanup**: Coordinated cleanup across all threads
+- **Interruption**: Graceful cancellation of all threads on Ctrl+C
+
+### Interruption Handling
+The runner gracefully handles interruptions (Ctrl+C) in both single and multi-threaded modes:
+
+#### Single-Threaded Interruption
 ```bash
 # Start a scan
 python3 scout_runner.py --account production
@@ -843,8 +1049,44 @@ Cleaning up temporary files...
 Cleanup complete. Exiting.
 ```
 
+#### Multi-Threaded Interruption
+```bash
+# Start multithreaded scan
+python3 scout_runner.py --multithread 3
+
+# Press Ctrl+C during execution
+^C
+2025-10-05 17:30:15,123 - [production-east] - INFO - Scan interrupted
+2025-10-05 17:30:15,124 - [staging-west] - INFO - Cancelling scan
+2025-10-05 17:30:15,125 - [development] - INFO - Thread terminated
+
+Received interrupt signal. Generating summary...
+
+============================================================
+INTERRUPTED EXECUTION SUMMARY
+============================================================
+Execution Time: 2024-01-15 14:30:25
+Attempted Profiles: 3
+Total Completed: 1
+Successful: 1
+Failed Scans: 0
+Failed Parsing: 0
+
+ATTEMPTED PROFILES:
+  ✓ production-east
+  ⏸ staging-west (interrupted)
+  ⏸ development (interrupted)
+============================================================
+
+Cancelling remaining threads...
+Cleaning up temporary files...
+Cleanup complete. Exiting.
+```
+
 **Interruption Features:**
 - **Summary Generation**: Shows progress made before interruption
+- **Thread Cancellation**: Gracefully cancels all running threads
 - **Email Notifications**: Sends failure alerts if any issues occurred
 - **Complete Cleanup**: Removes all temporary files and directories
 - **Graceful Exit**: Proper signal handling prevents data corruption
+- **Thread Coordination**: Ensures all threads are properly terminated

@@ -11,6 +11,8 @@ import smtplib
 import boto3
 import signal
 import atexit
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -32,6 +34,7 @@ class ScoutRunner:
             'attempted': []  # Track all profiles that were attempted
         }
         self.temp_dir = None
+        self.results_lock = threading.Lock()  # Thread-safe results tracking
         self.setup_cleanup_handlers()
         load_dotenv()
         
@@ -368,9 +371,12 @@ class ScoutRunner:
             except (ValueError, IndexError):
                 print("Invalid input. Please enter valid numbers.")
         
-    def run_scout_scan(self, profile, output_dir):
+    def run_scout_scan(self, profile, output_dir, logger=None):
         """Run ScoutSuite scan for a specific profile"""
-        self.logger.info(f"Running ScoutSuite scan for profile: {profile}")
+        if logger is None:
+            logger = self.logger
+            
+        logger.info(f"Running ScoutSuite scan for profile: {profile}")
         
         scout_path = self.venv_dir / "bin" / "scout"
         cmd = [
@@ -381,27 +387,30 @@ class ScoutRunner:
         ]
         
         try:
-            print(f"Scanning AWS account with profile '{profile}'...")
+            print(f"[{profile}] Scanning AWS account...")
             # Always show ScoutSuite output in real-time
             result = subprocess.run(cmd, check=True)
-            self.logger.info(f"Scan completed for profile: {profile}")
+            logger.info(f"Scan completed for profile: {profile}")
             return True, None
         except subprocess.CalledProcessError as e:
             error_msg = f"Exit code {e.returncode}: ScoutSuite scan failed"
-            self.logger.error(f"Scan failed for profile {profile}: {error_msg}")
+            logger.error(f"Scan failed for profile {profile}: {error_msg}")
             return False, error_msg
             
-    def process_scan_results(self, output_dir, profile):
+    def process_scan_results(self, output_dir, profile, logger=None):
         """Process ScoutSuite results with the parser"""
+        if logger is None:
+            logger = self.logger
+            
         # Find the results JS file
         results_files = list(Path(output_dir).glob("**/scoutsuite_results_*.js"))
         if not results_files:
             error_msg = "No results file found"
-            self.logger.error(f"{error_msg} for profile {profile}")
+            logger.error(f"{error_msg} for profile {profile}")
             return False, error_msg
             
         results_file = results_files[0]
-        self.logger.info(f"Processing results: {results_file}")
+        logger.info(f"Processing results: {results_file}")
         
         # Run the parser using venv python with proper environment
         parser_path = self.script_dir / "scoutsuite_parser.py"
@@ -418,54 +427,77 @@ class ScoutRunner:
         env['PYTHONPATH'] = str(self.script_dir)
             
         try:
-            print(f"Processing scan results for profile '{profile}'...")
+            print(f"[{profile}] Processing scan results...")
             if self.debug:
                 # Show all parser output in debug mode
                 result = subprocess.run(cmd, check=True, env=env)
             else:
                 # Show parser output but capture stderr for errors
                 result = subprocess.run(cmd, check=True, stderr=subprocess.PIPE, text=True, env=env)
-            self.logger.info(f"Results processed for profile: {profile}")
+            logger.info(f"Results processed for profile: {profile}")
             return True, None
         except subprocess.CalledProcessError as e:
             if hasattr(e, 'stderr') and e.stderr:
                 error_msg = f"Exit code {e.returncode}: {e.stderr.strip()}"
             else:
                 error_msg = f"Exit code {e.returncode}: Parser failed"
-            self.logger.error(f"Failed to process results for profile {profile}: {error_msg}")
+            logger.error(f"Failed to process results for profile {profile}: {error_msg}")
             return False, error_msg
             
     def scan_profile(self, profile):
-        """Scan a single profile"""
-        # Track that we attempted this profile
-        if profile not in self.scan_results['attempted']:
-            self.scan_results['attempted'].append(profile)
+        """Scan a single profile (thread-safe)"""
+        # Create thread-specific logger
+        thread_logger = self._get_thread_logger(profile)
+        
+        # Track that we attempted this profile (thread-safe)
+        with self.results_lock:
+            if profile not in self.scan_results['attempted']:
+                self.scan_results['attempted'].append(profile)
             
         temp_base = self.create_temp_dir()
         output_dir = temp_base / profile
         output_dir.mkdir(parents=True, exist_ok=True)
         
         try:
-            scan_success, scan_error = self.run_scout_scan(profile, output_dir)
+            scan_success, scan_error = self.run_scout_scan(profile, output_dir, thread_logger)
             if scan_success:
-                parse_success, parse_error = self.process_scan_results(output_dir, profile)
+                parse_success, parse_error = self.process_scan_results(output_dir, profile, thread_logger)
                 if parse_success:
-                    self.scan_results['successful'].append(profile)
+                    with self.results_lock:
+                        self.scan_results['successful'].append(profile)
                     return True
                 else:
-                    self.scan_results['failed_parse'].append({'profile': profile, 'error': parse_error})
+                    with self.results_lock:
+                        self.scan_results['failed_parse'].append({'profile': profile, 'error': parse_error})
                     return False
             else:
-                self.scan_results['failed_scan'].append({'profile': profile, 'error': scan_error})
+                with self.results_lock:
+                    self.scan_results['failed_scan'].append({'profile': profile, 'error': scan_error})
                 return False
         finally:
             # Clean up individual profile directory after processing
             if output_dir.exists():
                 try:
                     shutil.rmtree(output_dir)
-                    self.logger.debug(f"Cleaned up profile directory: {output_dir}")
+                    thread_logger.debug(f"Cleaned up profile directory: {output_dir}")
                 except Exception as e:
-                    self.logger.warning(f"Failed to cleanup profile directory {output_dir}: {e}")
+                    thread_logger.warning(f"Failed to cleanup profile directory {output_dir}: {e}")
+    
+    def _get_thread_logger(self, profile):
+        """Create thread-specific logger with profile prefix"""
+        logger_name = f"{__name__}.{profile}"
+        thread_logger = logging.getLogger(logger_name)
+        
+        # Only add handler if it doesn't exist
+        if not thread_logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(f'%(asctime)s - [{profile}] - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            thread_logger.addHandler(handler)
+            thread_logger.setLevel(logging.DEBUG if self.debug else logging.INFO)
+            thread_logger.propagate = False
+        
+        return thread_logger
             
     def send_failure_notification(self, subject, body, timeout=30):
         """Send email notification for failures"""
@@ -566,8 +598,8 @@ class ScoutRunner:
         summary += f"{'='*60}\n"
         return summary
     
-    def scan_all_profiles(self):
-        """Scan all AWS profiles"""
+    def scan_all_profiles(self, max_threads=1):
+        """Scan all AWS profiles with optional multithreading"""
         try:
             profiles = self.get_aws_profiles()
             if not profiles:
@@ -578,20 +610,11 @@ class ScoutRunner:
                 
             self.logger.info(f"Found {len(profiles)} AWS profiles: {', '.join(profiles)}")
             
-            for profile in profiles:
-                self.logger.info(f"Processing profile {profile}...")
-                # Track that we're attempting this profile
-                if profile not in self.scan_results['attempted']:
-                    self.scan_results['attempted'].append(profile)
-                try:
-                    self.scan_profile(profile)
-                except KeyboardInterrupt:
-                    # Don't re-raise here, let the signal handler deal with it
-                    break
-                except Exception as e:
-                    error_msg = f"Unexpected error processing {profile}: {str(e)}"
-                    self.logger.error(error_msg)
-                    self.scan_results['errors'].append(error_msg)
+            if max_threads > 1:
+                self.logger.info(f"Using {max_threads} threads for parallel processing")
+                self._scan_profiles_threaded(profiles, max_threads)
+            else:
+                self._scan_profiles_sequential(profiles)
             
             # Generate and display summary
             summary = self.generate_summary_report()
@@ -622,12 +645,53 @@ class ScoutRunner:
         finally:
             # Ensure cleanup happens
             self.cleanup_temp_dir()
+    
+    def _scan_profiles_sequential(self, profiles):
+        """Scan profiles one by one (original behavior)"""
+        for profile in profiles:
+            self.logger.info(f"Processing profile {profile}...")
+            # Track that we're attempting this profile
+            if profile not in self.scan_results['attempted']:
+                self.scan_results['attempted'].append(profile)
+            try:
+                self.scan_profile(profile)
+            except KeyboardInterrupt:
+                # Don't re-raise here, let the signal handler deal with it
+                break
+            except Exception as e:
+                error_msg = f"Unexpected error processing {profile}: {str(e)}"
+                self.logger.error(error_msg)
+                self.scan_results['errors'].append(error_msg)
+    
+    def _scan_profiles_threaded(self, profiles, max_threads):
+        """Scan profiles using thread pool"""
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            # Submit all profile scans
+            future_to_profile = {executor.submit(self.scan_profile, profile): profile for profile in profiles}
+            
+            try:
+                for future in as_completed(future_to_profile):
+                    profile = future_to_profile[future]
+                    try:
+                        future.result()  # This will raise any exception that occurred
+                        self.logger.info(f"Completed processing profile {profile}")
+                    except Exception as e:
+                        error_msg = f"Unexpected error processing {profile}: {str(e)}"
+                        self.logger.error(error_msg)
+                        with self.results_lock:
+                            self.scan_results['errors'].append(error_msg)
+            except KeyboardInterrupt:
+                # Cancel remaining futures
+                for future in future_to_profile:
+                    future.cancel()
+                raise
 
 def main():
     parser = argparse.ArgumentParser(description='ScoutSuite Runner - Automated AWS security scanning')
     parser.add_argument('--account', help='Scan specific AWS profile only')
     parser.add_argument('--setup', action='store_true', help='Setup ScoutSuite environment')
     parser.add_argument('--healthcheck', action='store_true', help='Check virtual environment dependencies')
+    parser.add_argument('--multithread', type=int, default=1, help='Number of concurrent scans (default: 1)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     
     args = parser.parse_args()
@@ -688,7 +752,7 @@ def main():
                 f"<html><body><pre>{html_summary}</pre></body></html>"
             )
     else:
-        runner.scan_all_profiles()
+        runner.scan_all_profiles(max_threads=args.multithread)
 
 if __name__ == '__main__':
     main()
