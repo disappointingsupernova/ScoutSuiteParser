@@ -1,0 +1,5 @@
+# Install via apt:
+# apt install python3-sqlalchemy python3-pymysql python3-dotenv python3-boto3
+
+# Or via pip:
+# pip install sqlalchemy pymysql python-dotenv boto3
