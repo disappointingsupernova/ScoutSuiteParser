@@ -191,6 +191,10 @@ $resolved = $_POST['resolved'] ?? $_GET['resolved'] ?? 'active';
 $accounts_sql = "SELECT DISTINCT account_id FROM scout_scans ORDER BY account_id";
 $accounts = $pdo->query($accounts_sql)->fetchAll(PDO::FETCH_COLUMN);
 
+// Get all resource types for dropdown
+$resource_types_sql = "SELECT DISTINCT resource_type FROM scout_events WHERE resource_type IS NOT NULL ORDER BY resource_type";
+$resource_types = $pdo->query($resource_types_sql)->fetchAll(PDO::FETCH_COLUMN);
+
 // Build query
 $where = [];
 $params = [];
@@ -248,7 +252,6 @@ $filtered_stats_sql = "
 SELECT 
     COUNT(DISTINCT se.id) as total_events,
     COUNT(DISTINCT CASE WHEN se.resolved_at IS NULL THEN se.id END) as active_events,
-    COUNT(DISTINCT CASE WHEN sf.level = 'good' AND se.resolved_at IS NULL THEN se.id END) as good,
     COUNT(DISTINCT CASE WHEN sf.level = 'warning' AND se.resolved_at IS NULL THEN se.id END) as warning,
     COUNT(DISTINCT CASE WHEN sf.level = 'danger' AND se.resolved_at IS NULL THEN se.id END) as danger,
     COUNT(DISTINCT ss.account_id) as accounts
@@ -333,15 +336,7 @@ $stats = $stmt_stats->fetch(PDO::FETCH_ASSOC);
                 </div>
             </div>
         </div>
-        <div class="col-lg-2 col-md-4 col-sm-6 mb-3">
-            <div class="card stat-card h-100 border-0 shadow-sm bg-success text-white">
-                <div class="card-body text-center">
-                    <i class="bi bi-check-circle-fill fs-1"></i>
-                    <h3 class="card-title mt-2"><?= number_format($stats['good']) ?></h3>
-                    <p class="card-text">Good</p>
-                </div>
-            </div>
-        </div>
+
         <div class="col-lg-2 col-md-4 col-sm-6 mb-3">
             <div class="card stat-card h-100 border-0 shadow-sm severity-warning text-dark">
                 <div class="card-body text-center">
@@ -391,14 +386,18 @@ $stats = $stmt_stats->fetch(PDO::FETCH_ASSOC);
                     <label class="form-label">Severity</label>
                     <select class="form-select" name="severity">
                         <option value="">All Severities</option>
-                        <option value="good" <?= $severity === 'good' ? 'selected' : '' ?>>Good</option>
                         <option value="warning" <?= $severity === 'warning' ? 'selected' : '' ?>>Warning</option>
                         <option value="danger" <?= $severity === 'danger' ? 'selected' : '' ?>>Danger</option>
                     </select>
                 </div>
                 <div class="col-md-2">
                     <label class="form-label">Resource Type</label>
-                    <input type="text" class="form-control" name="resource_type" placeholder="e.g. instance" value="<?= htmlspecialchars($resource_type) ?>">
+                    <select class="form-select" name="resource_type">
+                        <option value="">All Types</option>
+                        <?php foreach ($resource_types as $type): ?>
+                            <option value="<?= htmlspecialchars($type) ?>" <?= $resource_type === $type ? 'selected' : '' ?>><?= htmlspecialchars($type) ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
                 <div class="col-md-2">
                     <label class="form-label">Status</label>
@@ -453,7 +452,6 @@ $stats = $stmt_stats->fetch(PDO::FETCH_ASSOC);
                             <td>
                                 <?php
                                 $badgeClass = match($event['level']) {
-                                    'good' => 'bg-success',
                                     'warning' => 'bg-warning text-dark',
                                     'danger' => 'bg-danger',
                                     default => 'bg-light text-dark'
@@ -530,7 +528,7 @@ setTimeout(() => {
 document.querySelectorAll('.stat-card').forEach(card => {
     card.addEventListener('click', function() {
         const text = this.querySelector('.card-text').textContent.toLowerCase();
-        if (text.includes('good') || text.includes('warning') || text.includes('danger')) {
+        if (text.includes('warning') || text.includes('danger')) {
             const severity = text.replace(' ', '');
             const form = document.createElement('form');
             form.method = 'POST';
